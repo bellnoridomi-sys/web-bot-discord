@@ -896,6 +896,7 @@ const PUBLIC_BUNDLE_READY = [PUBLIC_INDEX, PUBLIC_CSS, PUBLIC_JS].every(file => 
 const WEB_DIR = PUBLIC_BUNDLE_READY ? PUBLIC_DIR : ROOT_DIR;
 const INDEX_FILE = PUBLIC_BUNDLE_READY ? PUBLIC_INDEX : ROOT_INDEX;
 
+// Explicit asset routes: CSS/JS must never be swallowed by the SPA fallback.
 app.get('/style.css', (req, res, next) => {
   const file = PUBLIC_BUNDLE_READY ? PUBLIC_CSS : ROOT_CSS;
   if (fs.existsSync(file)) return res.sendFile(file);
@@ -909,7 +910,13 @@ app.get('/script.js', (req, res, next) => {
 });
 
 app.use(express.static(WEB_DIR, { extensions: ['html'] }));
-app.get('/{*splat}', (req, res) => res.sendFile(INDEX_FILE));
+app.get('/{*splat}', (req, res) => {
+  const requested = String(req.path || '');
+  if (/\.(?:css|js|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|mp3|wav|mp4)$/i.test(requested)) {
+    return res.status(404).type('text/plain').send('Asset not found');
+  }
+  return res.sendFile(INDEX_FILE);
+});
 
 setInterval(() => {
   const now = Date.now();
