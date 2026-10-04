@@ -30,4 +30,31 @@ function flash(id,msg,error=false){const el=$(id);if(!el)return;el.textContent=m
 async function refreshActivity(){if(!state.guild)return;try{const d=await fetchJson('/api/activity');const allowed=state.guild.id;const items=(d.items||[]).filter(x=>!x.guild_id||x.guild_id===allowed);$('activityList').innerHTML=items.length?items.slice(0,20).map(x=>`<div class="activity-item"><b>${escapeHtml(x.action||'event')}</b><small>${escapeHtml(x.details||'')} · ${escapeHtml(new Date(x.created_at).toLocaleString('vi-VN'))}</small></div>`).join(''):'<div class="empty-line">No events yet.</div>'}catch{}}
 async function executeCommand(){if(!state.guild)return flash('responseBox','ERROR · SELECT A SERVER',true);try{const name=$('commandName').value.trim().replace(/^\//,'').toLowerCase();let args={};const raw=$('commandArgs').value.trim();if(raw){try{args=JSON.parse(raw)}catch{throw new Error('Arguments must be valid JSON.')}}const d=await fetchJson(`/api/guilds/${state.guild.id}/command`,{method:'POST',body:JSON.stringify({name,args,channelId:$('textChannel').value||undefined})});flash('responseBox',`OK · /${d.command}\n${d.payload}`);await refreshActivity()}catch(e){flash('responseBox',`ERROR · ${e.message}`,true)}}
 function setupControls(){const spark=$('sparkleControl');spark?.addEventListener('click',()=>showRoute('dashboard'));$('saveVoice')?.addEventListener('click',async()=>{try{const enabled=$('autoVoice').checked,channelId=$('voiceChannel').value;await fetchJson(`/api/guilds/${state.guild.id}/config`,{method:'PUT',body:JSON.stringify({auto_voice_enabled:enabled,auto_voice_channel_id:channelId})});flash('responseBox',enabled?'AUTO VOICE ENABLED + JOINED':'AUTO VOICE DISABLED');$('matrixVoice').textContent=enabled?'active':'standby'}catch(e){flash('responseBox',`ERROR · ${e.message}`,true)}});$('leaveVoice')?.addEventListener('click',async()=>{try{await fetchJson(`/api/guilds/${state.guild.id}/voice/leave`,{method:'POST'});flash('responseBox','VOICE · LEFT');$('matrixVoice').textContent='standby'}catch(e){flash('responseBox',`ERROR · ${e.message}`,true)}});$('saveAfk')?.addEventListener('click',async()=>{try{await fetchJson(`/api/guilds/${state.guild.id}/afk`,{method:'PUT',body:JSON.stringify({reason:$('afkReason').value.trim(),media_url:$('afkMedia').value.trim()})});$('afkStatus').textContent='ACTIVE';flash('afkStatus','ACTIVE · profile saved');updateAfkPreview()}catch(e){flash('afkStatus',`ERROR · ${e.message}`,true)}});$('clearAfk')?.addEventListener('click',async()=>{try{await fetchJson(`/api/guilds/${state.guild.id}/afk`,{method:'DELETE'});$('afkReason').value='';$('afkMedia').value='';updateAfkPreview();$('afkStatus').textContent='IDLE'}catch(e){flash('afkStatus',`ERROR · ${e.message}`,true)}});$('afkMedia')?.addEventListener('input',updateAfkPreview);$('afkReason')?.addEventListener('input',updateAfkPreview);$('sendCommand')?.addEventListener('click',executeCommand);$('refreshActivity')?.addEventListener('click',refreshActivity);document.querySelectorAll('[data-quick]').forEach(b=>b.addEventListener('click',()=>{$('commandName').value=b.dataset.quick;$('commandArgs').value='{}';executeCommand()}))}
-document.addEventListener('DOMContentLoaded',boot);
+
+function setupDevProfile(){
+  const card=$('devCard');
+  const avatar=$('akiAvatar');
+  const fallback=card?.querySelector('.avatar-fallback');
+  if(avatar && fallback){
+    const fail=()=>{avatar.style.display='none';fallback.style.display='grid'};
+    const ok=()=>{avatar.style.display='block';fallback.style.display='none'};
+    avatar.addEventListener('error',fail,{once:true});
+    avatar.addEventListener('load',ok,{once:true});
+    if(avatar.complete){avatar.naturalWidth?ok():fail()}
+  }
+  if(!card) return;
+  const reset=()=>{card.style.setProperty('--card-rx','0deg');card.style.setProperty('--card-ry','0deg');card.style.setProperty('--card-x','0px');card.style.setProperty('--card-y','0px')};
+  card.addEventListener('pointermove',e=>{
+    if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+    const r=card.getBoundingClientRect();
+    const x=(e.clientX-r.left)/r.width-.5;
+    const y=(e.clientY-r.top)/r.height-.5;
+    card.style.setProperty('--card-rx',`${y*-8}deg`);
+    card.style.setProperty('--card-ry',`${x*12}deg`);
+    card.style.setProperty('--card-x',`${x*10}px`);
+    card.style.setProperty('--card-y',`${y*8}px`);
+  });
+  card.addEventListener('pointerleave',reset);
+}
+
+document.addEventListener('DOMContentLoaded',()=>{boot();setupDevProfile()});
