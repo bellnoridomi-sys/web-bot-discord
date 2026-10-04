@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#050505" />
+  <meta name="description" content="Aki Dev — Discord bot & control dashboard." />
+  <title>Aki Dev — Discord Control</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23070707'/%3E%3Cpath d='M25 76 50 20l25 56h-13l-5-12H43l-5 12H25Zm23-24h5l-3-8-2 8Z' fill='white'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="noise"></div>
+  <canvas id="space" aria-hidden="true"></canvas>
+  <div class="cursor-glow" id="cursorGlow"></div>
+
+  <header class="topbar glass">
+    <a class="brand" href="#home" data-route="home">
+      <span class="brand-mark">A</span>
+      <span><b>AKI</b><small>DEV / CONTROL</small></span>
+    </a>
+    <nav class="nav" id="nav">
+      <a href="#home" data-route="home" class="active">Home</a>
+      <a href="#features" data-route="features">Features</a>
+      <a href="#dashboard" data-route="dashboard">Dashboard</a>
+      <a href="#commands" data-route="commands">Commands</a>
+      <a href="#docs" data-route="docs">Docs</a>
+    </nav>
+    <div class="top-actions">
+      <div class="status-pill"><i></i><span id="topStatus">SYSTEM READY</span></div>
+      <button class="button button-ghost" id="authButton">Sign in</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="view active" data-view="home">
+      <div class="hero-shell">
+        <div class="hero-copy">
+          <div class="eyebrow"><span>◈</span> MONOCHROME DISCORD OPERATING SYSTEM</div>
+          <h1>Control Discord.<br><em>Beyond the bot.</em></h1>
+          <p>Dashboard 3D màu đen-trắng, OAuth thật, điều khiển bot Discord thật và bộ công cụ server 25+ lệnh. Thiết kế bởi <strong>Aki dev</strong>.</p>
+          <div class="hero-cta">
+            <a class="button button-light" href="#dashboard" data-route="dashboard">Open dashboard <span>↗</span></a>
+            <a class="button button-ghost" href="#features" data-route="features">Explore system</a>
+          </div>
+          <div class="hero-meta">
+            <div><small>COMMANDS</small><b id="heroCommands">26</b></div>
+            <div><small>VOICE</small><b>AUTO</b></div>
+            <div><small>CONTROL</small><b>LIVE</b></div>
+          </div>
+        </div>
+        <div class="hero-visual">
+          <div class="orbital" id="orbital">
+            <div class="ring ring-a"></div><div class="ring ring-b"></div><div class="ring ring-c"></div>
+            <div class="sphere"><span>A</span></div>
+            <div class="orbit-dot dot-1"></div><div class="orbit-dot dot-2"></div><div class="orbit-dot dot-3"></div>
+            <div class="data-tag tag-a">BOT CORE <b>ONLINE</b></div>
+            <div class="data-tag tag-b">VOICE <b>24/7*</b></div>
+            <div class="data-tag tag-c">LATENCY <b id="heroPing">—</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="marquee"><div>AKI DEV · DISCORD AUTOMATION · 3D CONTROL · MODERATION · VOICE · UTILITY · AKI DEV · DISCORD AUTOMATION · 3D CONTROL ·</div></div>
+    </section>
+
+    <section class="view" data-view="features">
+      <div class="section-head"><div><span class="eyebrow">01 / SYSTEM</span><h2>Built to keep<br><em>people in.</em></h2></div><p>Không phải dashboard chỉ đổi vài dòng chữ. Các thao tác dưới đây đều đi qua backend và Discord API thật.</p></div>
+      <div class="feature-grid">
+        <article class="feature-card tall"><span>01</span><div class="feature-icon">◌</div><h3>Live Bot Core</h3><p>Gateway latency, guild count, command registry và trạng thái bot cập nhật trực tiếp.</p><div class="card-foot">REAL-TIME / SOCKET.IO</div></article>
+        <article class="feature-card"><span>02</span><div class="feature-icon">✦</div><h3>Moderation</h3><p>Warn, clear, slowmode, lock, unlock, kick, ban và timeout với permission guard.</p><div class="card-foot">PERMISSION AWARE</div></article>
+        <article class="feature-card"><span>03</span><div class="feature-icon">◍</div><h3>Auto Voice</h3><p>Chọn voice channel từ dashboard, bot tự vào và có cơ chế reconnect khi voice rớt.</p><div class="card-foot">AUTO-RECONNECT</div></article>
+        <article class="feature-card"><span>04</span><div class="feature-icon">⌁</div><h3>Discord / Google OAuth</h3><p>Đăng nhập OAuth2, state validation và session cookie HttpOnly. Discord login phù hợp để điều khiển server.</p><div class="card-foot">OAUTH2 / SECURE SESSION</div></article>
+        <article class="feature-card wide"><span>05</span><div class="feature-split"><div><div class="feature-icon">▦</div><h3>Command Deck</h3><p>Web có Command Lab để gửi lệnh từ dashboard vào kênh Discord thật, cùng Activity Feed để xem những gì vừa xảy ra.</p></div><div class="mini-console"><b>aki@control</b><p>/announce <span>server update online</span></p><p>/auto-voice <span>enabled</span></p><p>/slowmode <span>10s</span></p></div></div><div class="card-foot">WEB → API → DISCORD</div></article>
+      </div>
+      <div class="section-note">* 24/7 thực tế phụ thuộc plan hosting; Render Free có thể sleep. Hệ thống vẫn tự reconnect sau khi service hoạt động lại.</div>
+    </section>
+
+    <section class="view" data-view="dashboard">
+      <div class="section-head dashboard-head"><div><span class="eyebrow">02 / COMMAND CENTER</span><h2>One screen.<br><em>Full control.</em></h2></div><div class="dashboard-auth" id="dashboardAuth"></div></div>
+      <div class="dashboard-empty glass" id="loginGate">
+        <div class="empty-orbit"><span>A</span></div>
+        <h3>Sign in to unlock your control room</h3>
+        <p>Discord login dùng để xác thực quyền quản lý server. Google login vẫn đăng nhập dashboard được, nhưng muốn điều khiển server cần liên kết Discord.</p>
+        <div class="login-actions"><a class="button button-light" href="/auth/discord">Continue with Discord</a><a class="button button-ghost" href="/auth/google">Continue with Google</a></div>
+      </div>
+      <div class="dashboard" id="dashboardPanel" hidden>
+        <div class="dashboard-top glass">
+          <div class="server-pick"><label>SERVER</label><select id="guildSelect"></select></div>
+          <div class="metrics"><div><small>LATENCY</small><b id="metricPing">—</b></div><div><small>MEMBERS</small><b id="metricMembers">—</b></div><div><small>CHANNELS</small><b id="metricChannels">—</b></div><div><small>COMMANDS</small><b id="metricCommands">—</b></div></div>
+        </div>
+        <div class="dashboard-grid">
+          <div class="panel glass system-panel">
+            <div class="panel-title"><div><span>BOT SYSTEM</span><h3>Runtime matrix</h3></div><span class="online-dot" id="botDot"></span></div>
+            <div class="matrix"><div><span>gateway</span><b id="matrixGateway">waiting</b></div><div><span>database</span><b id="matrixDb">waiting</b></div><div><span>oauth</span><b>armed</b></div><div><span>voice</span><b id="matrixVoice">standby</b></div></div>
+            <div class="button-row"><button class="button button-light" data-quick="ping">Ping bot</button><button class="button button-ghost" data-quick="botinfo">Bot info</button></div>
+          </div>
+          <div class="panel glass voice-panel">
+            <div class="panel-title"><div><span>VOICE CORE</span><h3>Stay in channel</h3></div><div class="switch-wrap"><input id="autoVoice" type="checkbox"><label for="autoVoice">AUTO</label></div></div>
+            <label class="field-label">Voice channel</label><select id="voiceChannel"></select>
+            <div class="voice-actions"><button class="button button-light" id="saveVoice">Apply & join</button><button class="button button-ghost" id="leaveVoice">Leave</button></div>
+            <p class="tiny-note">Bot tự reconnect khi mất voice. Hosting sleep vẫn là giới hạn bên ngoài bot.</p>
+          </div>
+          <div class="panel glass command-panel">
+            <div class="panel-title"><div><span>COMMAND LAB</span><h3>Send to Discord</h3></div><span class="kbd">LIVE</span></div>
+            <div class="command-line"><span>/</span><input id="commandName" list="commandList" placeholder="announce / clear / vc-join / ..."><datalist id="commandList"></datalist></div>
+            <textarea id="commandArgs" rows="5" placeholder='JSON args, ví dụ: {"message":"Hello server"}'></textarea>
+            <div class="send-row"><select id="textChannel"></select><button class="button button-light" id="sendCommand">Execute ↗</button></div>
+            <div class="response-box" id="commandResponse">READY · waiting for command</div>
+          </div>
+          <div class="panel glass activity-panel">
+            <div class="panel-title"><div><span>ACTIVITY</span><h3>Recent events</h3></div><button class="icon-button" id="refreshActivity">↻</button></div>
+            <div class="activity-list" id="activityList"><div class="activity-empty">No events yet.</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" data-view="commands">
+      <div class="section-head"><div><span class="eyebrow">03 / COMMANDS</span><h2>25 tools.<br><em>Zero filler.</em></h2></div><p>Slash commands đăng ký thật qua Discord HTTP API. Một số lệnh có prefix alias `!` để dùng nhanh trong server.</p></div>
+      <div class="command-library" id="commandLibrary"></div>
+    </section>
+
+    <section class="view" data-view="docs">
+      <div class="section-head"><div><span class="eyebrow">04 / DOCUMENTATION</span><h2>Ship it.<br><em>Safely.</em></h2></div><p>Deploy từ GitHub lên Render, cắm credentials qua Environment Variables và dùng đúng callback OAuth.</p></div>
+      <div class="docs-grid">
+        <article class="doc-card glass"><span>01</span><h3>Discord Developer Portal</h3><p>Tạo Application → Bot → lấy Token. Bật <b>Guilds / Guild Messages / Message Content / Guild Voice States</b> theo cấu hình code. OAuth2 Redirect URI:</p><code>/auth/discord/callback</code></article>
+        <article class="doc-card glass"><span>02</span><h3>Google Cloud</h3><p>Tạo OAuth Client loại Web application. Authorized redirect URI:</p><code>/auth/google/callback</code><p>Điền Client ID và Client Secret vào Render Environment.</p></article>
+        <article class="doc-card glass"><span>03</span><h3>Render</h3><p>Dùng Blueprint <b>render.yaml</b>. Nó tạo Web Service + Postgres. Web app nghe trên <code>0.0.0.0:$PORT</code> và có health check.</p></article>
+        <article class="doc-card glass"><span>04</span><h3>24/7 reality check</h3><p>Free Web Service của Render sleep sau 15 phút không có inbound traffic. Muốn bot/voice chạy liên tục, chọn compute plan không sleep.</p></article>
+      </div>
+      <div class="install-panel glass"><div><span class="eyebrow">LOCAL</span><h3>Start in 3 commands</h3></div><pre><code>cp .env.example .env
+npm install
+npm start</code></pre></div>
+    </section>
+  </main>
+
+  <footer class="footer"><div><b>AKI DEV</b><span>Discord Control System</span></div><div>WEB BY <b>AKI DEV</b> · 2026</div></footer>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/script.js"></script>
+</body>
+</html>

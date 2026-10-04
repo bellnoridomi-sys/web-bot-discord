@@ -1,0 +1,24 @@
+{
+  "name": "aki-discord-control",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Aki Dev — monochrome Discord bot + 3D control dashboard",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@discordjs/voice": "0.19.2",
+    "discord.js": "14.19.3",
+    "dotenv": "17.2.2",
+    "express": "5.1.0",
+    "express-rate-limit": "8.2.1",
+    "helmet": "8.1.0",
+    "pg": "8.16.3",
+    "socket.io": "4.8.1"
+  }
+}

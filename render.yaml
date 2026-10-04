@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: aki-discord-control
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install --no-audit --no-fund
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_NAME
+        value: Aki Dev
+      - key: SITE_URL
+        value: https://aki-discord-control.onrender.com
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aki-discord-db
+          property: connectionString
+
+databases:
+  - name: aki-discord-db
+    plan: free
+    region: singapore
