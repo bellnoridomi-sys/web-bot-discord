@@ -881,7 +881,6 @@ app.get('/api/overview', requireAuth, async (req, res) => {
 
 app.use(express.static('public', { extensions: ['html'] }));
 app.get('/{*splat}', (req, res) => res.sendFile(fileURLToPath(new URL('./public/index.html', import.meta.url))));
-
 setInterval(() => {
   const now = Date.now();
   for (const [sid, session] of sessionStore) if (now - session.lastSeen > 7 * 24 * 60 * 60_000) sessionStore.delete(sid);
