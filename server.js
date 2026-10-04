@@ -5,6 +5,8 @@ import rateLimit from 'express-rate-limit';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
 import {
@@ -879,8 +881,17 @@ app.get('/api/overview', requireAuth, async (req, res) => {
   });
 });
 
-app.use(express.static('public', { extensions: ['html'] }));
-app.get('/{*splat}', (req, res) => res.sendFile(fileURLToPath(new URL('./public/index.html', import.meta.url))));
+const ROOT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
+const PUBLIC_INDEX = path.join(PUBLIC_DIR, 'index.html');
+const ROOT_INDEX = path.join(ROOT_DIR, 'index.html');
+const WEB_DIR = fs.existsSync(PUBLIC_INDEX) && fs.statSync(PUBLIC_INDEX).size > 64 ? PUBLIC_DIR : ROOT_DIR;
+
+app.use(express.static(WEB_DIR, { extensions: ['html'] }));
+app.get('/{*splat}', (req, res) => {
+  const indexFile = WEB_DIR === PUBLIC_DIR ? PUBLIC_INDEX : ROOT_INDEX;
+  return res.sendFile(indexFile);
+});
 
 setInterval(() => {
   const now = Date.now();

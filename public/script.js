@@ -17,6 +17,7 @@ const COMMANDS = [
 const $ = id => document.getElementById(id);
 
 document.addEventListener('DOMContentLoaded', () => {
+  document.documentElement.classList.add('aki-ready');
   setupNavigation();
   setupVisuals();
   renderCommandLibrary();
@@ -27,10 +28,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function setupNavigation(){
   document.querySelectorAll('[data-route]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); navigate(a.dataset.route); }));
-  const initial = location.hash.replace('#','') || 'home';
+  const getRoute = () => decodeURIComponent(location.hash.replace(/^#/, '')) || 'home';
+  const initial = getRoute();
   navigate(state.routes.includes(initial) ? initial : 'home', false);
-  window.addEventListener('popstate', () => navigate(location.hash.replace('#','') || 'home', false));
+  window.addEventListener('popstate', () => navigate(getRoute(), false));
+  window.addEventListener('hashchange', () => navigate(getRoute(), false));
 }
+
 function navigate(route, push=true){
   if(!state.routes.includes(route)) route='home';
   const current = document.querySelector('.view.active');
