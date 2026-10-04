@@ -1,30 +1,34 @@
 <!doctype html>
 <html lang="vi">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#050505">
-  <meta name="description" content="Aki Dev — anime-inspired monochrome Discord control dashboard.">
-  <title>Aki Dev — Discord Control</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23050505'/%3E%3Cpath d='M20 78 50 18l30 60H66l-5-12H39l-5 12H20Zm24-25h12l-6-16-6 16Z' fill='white'/%3E%3C/svg%3E">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#050505">
+<meta name="description" content="Aki Dev — monochrome anime Discord control room with a living 3D-inspired signal world.">
+<title>Aki Dev — Living Signal Control</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='25' fill='%23050505'/%3E%3Cpath d='M18 78 50 17l32 61H67l-6-13H39l-6 13H18Zm26-25h12l-6-18-6 18Z' fill='white'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div class="bg-noise"></div>
-  <div class="bg-grid"></div>
-  <div class="bg-orb orb-1"></div>
-  <div class="bg-orb orb-2"></div>
-  <canvas id="space" aria-hidden="true"></canvas>
+<div class="site-shell">
+  <div class="living-layer" aria-hidden="true">
+    <canvas id="space"></canvas>
+    <div class="fog fog-a"></div><div class="fog fog-b"></div><div class="fog fog-c"></div>
+    <div class="grain"></div>
+    <div class="scanline"></div>
+    <div class="sigil-watermark">アキ</div>
+    <div class="corner corner-tl"></div><div class="corner corner-tr"></div><div class="corner corner-bl"></div><div class="corner corner-br"></div>
+  </div>
   <div id="cursorGlow" class="cursor-glow" aria-hidden="true"></div>
   <div id="transitionFlash" class="transition-flash" aria-hidden="true"></div>
 
   <header class="topbar">
-    <a class="brand" href="#home" data-route="home">
-      <span class="brand-mark">A</span>
-      <span class="brand-text"><strong>AKI</strong><small>DEV / BLACK SIGNAL</small></span>
+    <a class="brand" href="#home" data-route="home" aria-label="Aki Dev home">
+      <span class="brand-mark"><span>A</span></span>
+      <span class="brand-copy"><b>AKI DEV</b><small>黒 / LIVING SIGNAL</small></span>
     </a>
     <nav class="nav" id="nav" aria-label="Main navigation">
       <a href="#home" data-route="home">Home</a>
@@ -35,170 +39,108 @@
     </nav>
     <div class="top-actions">
       <span class="status-pill"><i></i><span id="topStatus">WEB ONLINE</span></span>
-      <button class="btn btn-ghost btn-small" id="authButton" type="button">Sign in</button>
+      <button class="btn btn-ghost btn-small" id="authButton" type="button">SIGN IN</button>
     </div>
   </header>
 
   <main id="app">
     <section class="page active" data-page="home" aria-labelledby="home-title">
-      <div class="home-layout">
+      <div class="home-hero">
         <div class="hero-copy">
-          <div class="eyebrow"><span>◈</span> MONOCHROME / ANIME CORE / DISCORD CONTROL</div>
-          <div class="hero-kana">黒 · A K I · 黒 · CONTROL</div>
-          <h1 id="home-title">Control Discord.<br><span>Enter the anime core.</span></h1>
-          <p class="hero-lead">Một control room trắng-đen có chiều sâu: glass, motion, HUD, 3D sigil và những thao tác đi từ web → API → Discord.</p>
+          <div class="micro-label"><span class="pulse-dot"></span> ANIME CORE / WEB → DISCORD / REALTIME CONTROL</div>
+          <div class="hero-kana">生 SIGNAL · 影 CONTROL · アキ DEV</div>
+          <h1 id="home-title">A living control room<br><em>for your Discord world.</em></h1>
+          <p class="hero-lead">Lấy cảm giác “Living Green” — một thế giới chuyển động liên tục, có chiều sâu và phản hồi theo chuột — rồi biến nó thành một anime signal garden trắng-đen cho Aki.</p>
           <div class="hero-actions">
-            <div class="sp">
-              <button class="sparkle-button featured-sparkle" id="sparkleControl" type="button" data-route="dashboard" aria-label="Open control room">
+            <div class="spark-wrap">
+              <button class="sparkle-button" id="sparkleControl" type="button" data-route="dashboard" aria-label="Open control room">
                 <span class="spark"></span><span class="backdrop"></span>
-                <svg class="sparkle" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.187 8.096 15 5.25l.813 2.846a5.52 5.52 0 0 0 3.09 3.09L21.75 12l-2.846.813a5.52 5.52 0 0 0-3.09 3.09L15 18.75l-.813-2.846a5.52 5.52 0 0 0-3.09-3.09L8.25 12l2.846-.813a5.52 5.52 0 0 0 3.09-3.091ZM6 14.25l.259 1.035a3.1 3.1 0 0 0 2.455 2.455L9.75 18l-1.036.259a3.1 3.1 0 0 0-2.455 2.456L6 21.75l-.259-1.035a3.1 3.1 0 0 0-2.455-2.456L2.25 18l1.036-.26a3.1 3.1 0 0 0 2.455-2.455L6 14.25ZM6.5 4l.197.592a2 2 0 0 0 1.272 1.272L8.5 5.5l-.592-.197a2 2 0 0 0-1.272-1.272L6.5 4Z"/></svg>
+                <svg class="sparkle" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M14.187 8.096 15 5.25l.813 2.846a5.52 5.52 0 0 0 3.09 3.09L21.75 12l-2.846.813a5.52 5.52 0 0 0-3.09 3.09L15 18.75l-.813-2.846a5.52 5.52 0 0 0-3.09-3.09L8.25 12l2.846-.813a5.52 5.52 0 0 0 3.09-3.091Z"/>
+                  <path d="m6 14.25.259 1.035a3.1 3.1 0 0 0 2.455 2.455L9.75 18l-1.036.259a3.1 3.1 0 0 0-2.455 2.456L6 21.75l-.259-1.035a3.1 3.1 0 0 0-2.455-2.456L2.25 18l1.036-.26a3.1 3.1 0 0 0 2.455-2.455L6 14.25Z"/>
+                  <path d="m6.5 4 .197.592a2 2 0 0 0 1.272 1.272L8.5 5.5l-.592-.197a2 2 0 0 0-1.272-1.272L6.5 4Z"/>
+                </svg>
                 <span class="text">OPEN CONTROL ROOM</span><span class="spark-arrow">↗</span>
               </button>
-              <div class="particle-pen" aria-hidden="true">
-                <i class="particle p1">✦</i><i class="particle p2">✦</i><i class="particle p3">✧</i><i class="particle p4">✦</i><i class="particle p5">✧</i>
-              </div>
+              <div class="spark-burst" aria-hidden="true"><i>✦</i><i>✧</i><i>✦</i><i>◇</i><i>✦</i><i>✧</i></div>
             </div>
-            <a class="btn btn-ghost btn-large" href="#features" data-route="features">Explore system <span>↓</span></a>
+            <a class="btn btn-glass btn-large" href="#features" data-route="features">EXPLORE SYSTEM <span>↓</span></a>
           </div>
           <div class="hero-stats">
-            <div class="stat-card"><small>COMMANDS</small><strong id="heroCommands">26</strong><span>registered</span></div>
-            <div class="stat-card"><small>AFK MEDIA</small><strong>GIF</strong><span>personal profiles</span></div>
+            <div class="stat-card"><small>COMMANDS</small><strong id="heroCommands">26</strong><span>real slash tools</span></div>
+            <div class="stat-card"><small>AFK MEDIA</small><strong>GIF</strong><span>personal memory</span></div>
             <div class="stat-card"><small>VOICE</small><strong>AUTO</strong><span>reconnect core</span></div>
           </div>
         </div>
 
-        <div class="hero-stage" id="orbital">
-          <div class="stage-surface"></div>
-          <div class="stage-ring ring-a"></div><div class="stage-ring ring-b"></div><div class="stage-ring ring-c"></div>
-          <div class="hud-card hud-a"><span>01 / GATEWAY</span><b id="heroPing">—</b></div>
-          <div class="hud-card hud-b"><span>02 / AFK MEDIA</span><b>IMAGE / GIF</b></div>
-          <div class="hud-card hud-c"><span>03 / VOICE CORE</span><b>RECONNECT</b></div>
-          <div class="anime-core">
-            <div class="eye-glow"></div>
-            <div class="core-orbit orbit-one"></div>
-            <div class="core-orbit orbit-two"></div>
-            <div class="core-orbit orbit-three"></div>
-            <div class="core-sigil"><span>A</span><small>アキ</small></div>
-            <div class="blade blade-one"></div><div class="blade blade-two"></div>
-            <div class="core-dot dot-one"></div><div class="core-dot dot-two"></div><div class="core-dot dot-three"></div>
+        <div class="living-stage" id="orbital" aria-label="Living signal world">
+          <div class="world-frame"></div>
+          <div class="world-grid"></div>
+          <div class="world-halo halo-1"></div><div class="world-halo halo-2"></div><div class="world-halo halo-3"></div>
+          <div class="root-system">
+            <span class="root-line r1"></span><span class="root-line r2"></span><span class="root-line r3"></span><span class="root-line r4"></span><span class="root-line r5"></span>
+            <span class="root-node n1"></span><span class="root-node n2"></span><span class="root-node n3"></span><span class="root-node n4"></span><span class="root-node n5"></span>
           </div>
-          <div class="scan-tag"><span>AKI / 影</span><b>ONLINE SIGNAL</b><i></i></div>
+          <div class="signal-core">
+            <div class="core-ring core-ring-a"></div><div class="core-ring core-ring-b"></div><div class="core-ring core-ring-c"></div>
+            <div class="core-disc"><span>A</span><small>アキ</small></div>
+            <div class="core-blade blade-a"></div><div class="core-blade blade-b"></div>
+            <div class="core-cross"></div>
+          </div>
+          <div class="hud-panel hud-left"><small>01 / GATEWAY</small><b id="heroPing">—</b><span>heartbeat</span></div>
+          <div class="hud-panel hud-top"><small>02 / LIVING WORLD</small><b>RESPONSIVE</b><span>pointer field / pollen / roots</span></div>
+          <div class="hud-panel hud-right"><small>03 / DISCORD</small><b>CONNECTED</b><span>web → api → bot</span></div>
+          <div class="moth"><span class="wing wing-a"></span><span class="wing wing-b"></span><i></i></div>
+          <div class="floating-tag tag-a">AKI / 影</div><div class="floating-tag tag-b">ROOT::07</div><div class="floating-tag tag-c">∞</div>
+          <div class="world-caption"><span>生きている</span><b>LIVING SIGNAL</b></div>
         </div>
       </div>
 
-
       <section class="manual-section" aria-labelledby="manual-title">
         <div class="manual-heading">
-          <div>
-            <div class="eyebrow">ARCHIVE / 03D / AKI FIELD MANUALS</div>
-            <h2 id="manual-title">Open a <span>core.</span></h2>
-          </div>
-          <p>Ba module cards này dùng cảm giác “interactive book” như hiệu ứng bro tìm được: lớp cover, page-stack, 3D tilt, depth shadow, orbital glow và transition khi hover.</p>
+          <div><div class="eyebrow">ARCHIVE / THREE MODULES</div><h2 id="manual-title">Open a <span>core.</span></h2></div>
+          <p>Book-depth interaction lấy cảm hứng từ visual bro đưa: cover, page stack, 3D tilt, scan light và một lớp thế giới sống phía sau.</p>
         </div>
-
         <div class="manual-gallery" id="manualGallery">
           <button class="manual-card" type="button" data-manual="core" aria-label="Open Aki Core manual">
-            <span class="manual-book" aria-hidden="true">
-              <span class="manual-shadow"></span>
-              <span class="manual-back"></span>
-              <span class="manual-pages"></span>
-              <span class="manual-fan"><i></i><i></i><i></i><i></i></span>
-              <span class="manual-cover">
-                <span class="manual-scan"></span>
-                <span class="manual-copy">
-                  <small>FIELD MANUAL · I</small>
-                  <strong>AKI<br>CORE</strong>
-                  <em>Gateway / API / Control</em>
-                  <span class="manual-rule"></span>
-                  <b>黒 SIGNAL SYSTEM</b>
-                </span>
-                <span class="manual-seal">アキ</span>
-              </span>
-              <span class="manual-read">READ ↗</span>
-            </span>
+            <span class="manual-book"><span class="manual-shadow"></span><span class="manual-back"></span><span class="manual-pages"></span><span class="manual-fan"><i></i><i></i><i></i><i></i></span><span class="manual-cover"><span class="manual-scan"></span><span class="manual-copy"><small>FIELD MANUAL · I</small><strong>AKI<br>CORE</strong><em>Gateway / API / Control</em><span class="manual-rule"></span><b>黒 SIGNAL SYSTEM</b></span><span class="manual-seal">アキ</span></span><span class="manual-read">READ ↗</span></span>
           </button>
-
           <button class="manual-card manual-center" type="button" data-manual="afk" aria-label="Open AFK Studio manual">
-            <span class="manual-book" aria-hidden="true">
-              <span class="manual-shadow"></span>
-              <span class="manual-back"></span>
-              <span class="manual-pages"></span>
-              <span class="manual-fan"><i></i><i></i><i></i><i></i></span>
-              <span class="manual-cover">
-                <span class="manual-scan"></span>
-                <span class="manual-copy">
-                  <small>FIELD MANUAL · II</small>
-                  <strong>AFK<br>STUDIO</strong>
-                  <em>Memory / Image / GIF</em>
-                  <span class="manual-rule"></span>
-                  <b>余白 / AWAY MODE</b>
-                </span>
-                <span class="manual-seal">AFK</span>
-              </span>
-              <span class="manual-read">READ ↗</span>
-            </span>
+            <span class="manual-book"><span class="manual-shadow"></span><span class="manual-back"></span><span class="manual-pages"></span><span class="manual-fan"><i></i><i></i><i></i><i></i></span><span class="manual-cover"><span class="manual-scan"></span><span class="manual-copy"><small>FIELD MANUAL · II</small><strong>AFK<br>STUDIO</strong><em>Memory / Image / GIF</em><span class="manual-rule"></span><b>余白 / AWAY MODE</b></span><span class="manual-seal">AFK</span></span><span class="manual-read">READ ↗</span></span>
           </button>
-
           <button class="manual-card" type="button" data-manual="voice" aria-label="Open Voice Core manual">
-            <span class="manual-book" aria-hidden="true">
-              <span class="manual-shadow"></span>
-              <span class="manual-back"></span>
-              <span class="manual-pages"></span>
-              <span class="manual-fan"><i></i><i></i><i></i><i></i></span>
-              <span class="manual-cover">
-                <span class="manual-scan"></span>
-                <span class="manual-copy">
-                  <small>FIELD MANUAL · III</small>
-                  <strong>VOICE<br>CORE</strong>
-                  <em>Stay / Reconnect / Auto</em>
-                  <span class="manual-rule"></span>
-                  <b>接続 / ALWAYS HERE</b>
-                </span>
-                <span class="manual-seal">VC</span>
-              </span>
-              <span class="manual-read">READ ↗</span>
-            </span>
+            <span class="manual-book"><span class="manual-shadow"></span><span class="manual-back"></span><span class="manual-pages"></span><span class="manual-fan"><i></i><i></i><i></i><i></i></span><span class="manual-cover"><span class="manual-scan"></span><span class="manual-copy"><small>FIELD MANUAL · III</small><strong>VOICE<br>CORE</strong><em>Stay / Reconnect / Auto</em><span class="manual-rule"></span><b>接続 / ALWAYS HERE</b></span><span class="manual-seal">VC</span></span><span class="manual-read">READ ↗</span></span>
           </button>
         </div>
-
-        <div class="manual-statusbar">
-          <span>AKI ARCHIVE</span><i></i><b id="manualStatus">SELECT A MANUAL</b><span>03 / 03</span>
-        </div>
+        <div class="manual-statusbar"><span>AKI ARCHIVE</span><i></i><b id="manualStatus">SELECT A MANUAL</b><span>03 / 03</span></div>
       </section>
 
-      <div class="marquee"><span>AKI DEV · AFK MEDIA · ANIME CORE · 3D CONTROL · MODERATION · VOICE · OAUTH · REALTIME · WEB → DISCORD · </span><span>AKI DEV · AFK MEDIA · ANIME CORE · 3D CONTROL · MODERATION · VOICE · OAUTH · REALTIME · WEB → DISCORD · </span></div>
-      <div class="signature-row"><p><span>DESIGN NOTE</span> contrast / depth / glass / shadow / light</p><strong>WEB BY AKI DEV</strong></div>
+      <div class="signal-strip"><span>AKI DEV</span><b>AFK MEDIA</b><span>ANIME CORE</span><b>VOICE</b><span>OAUTH</span><b>REALTIME</b><span>WEB → DISCORD</span><b>3D DEPTH</b></div>
+      <div class="signature-row"><p><span>VISUAL NOTE</span> living world / monochrome / motion / depth / light</p><strong>WEB BY AKI DEV</strong></div>
     </section>
 
     <section class="page" data-page="features" aria-labelledby="features-title">
-      <div class="page-head"><div><div class="eyebrow">01 / SYSTEM</div><h2 id="features-title">Built to feel <span>alive.</span></h2></div><p>Không dùng neon để gây ấn tượng. Dùng tương phản, không gian 3D và motion có chủ đích để mỗi panel có cảm giác như một thiết bị thật.</p></div>
+      <div class="page-head"><div><div class="eyebrow">01 / SYSTEM</div><h2 id="features-title">Built to feel <span>alive.</span></h2></div><p>Không dùng neon để gây ấn tượng. Dùng contrast, 3D space, liquid highlights và background motion có chủ đích.</p></div>
       <div class="feature-grid">
-        <article class="feature-card tall"><div class="feature-number">01</div><div class="feature-icon">◌</div><h3>Live Bot Core</h3><p>Gateway latency, guild count và command registry được lấy từ backend thay vì dữ liệu giả.</p><small>REAL-TIME / SOCKET.IO</small></article>
+        <article class="feature-card tall"><div class="feature-number">01</div><div class="feature-icon">◌</div><h3>Live Bot Core</h3><p>Gateway latency, guild count và command registry được lấy từ backend thay vì số liệu giả.</p><small>REAL-TIME / SOCKET.IO</small></article>
         <article class="feature-card"><div class="feature-number">02</div><div class="feature-icon">✦</div><h3>AFK Memory</h3><p>Mỗi member có reason và media riêng. Khi bị tag, bot có thể gửi ảnh/GIF trong embed.</p><small>IMAGE / GIF / EMBED</small></article>
         <article class="feature-card"><div class="feature-number">03</div><div class="feature-icon">◍</div><h3>Auto Voice</h3><p>Chọn voice channel, bật auto-voice và bot tự phục hồi connection khi bị disconnect.</p><small>AUTO-RECONNECT</small></article>
-        <article class="feature-card"><div class="feature-number">04</div><div class="feature-icon">⌁</div><h3>OAuth Gate</h3><p>Discord OAuth2 dùng session để xác định người dùng và server mà họ có quyền quản lý.</p><small>OAUTH2 / ACCESS</small></article>
-        <article class="feature-card wide"><div class="wide-copy"><div class="feature-number">05</div><div class="feature-icon">▦</div><h3>Command Deck</h3><p>Web có command lab, activity feed, voice controls và AFK Studio. Không phải nút trang trí.</p></div><div class="terminal"><span>AKI://CORE</span><code>&gt; /afk reason:offline image.gif<br>&gt; /auto-voice enabled<br>&gt; /announce online<br>&gt; /timeout user 10</code></div><small>WEB → API → DISCORD</small></article>
+        <article class="feature-card"><div class="feature-number">04</div><div class="feature-icon">⌁</div><h3>OAuth Gate</h3><p>Discord OAuth2 dùng session để xác định user và server mà họ có quyền quản lý.</p><small>OAUTH2 / ACCESS</small></article>
+        <article class="feature-card wide"><div class="wide-copy"><div class="feature-number">05</div><div class="feature-icon">▦</div><h3>Command Deck</h3><p>Web có command lab, activity feed, voice controls và AFK Studio.</p></div><div class="terminal"><span>AKI://LIVING_SIGNAL</span><code>&gt; /afk reason:offline image.gif<br>&gt; /auto-voice enabled<br>&gt; /announce online<br>&gt; /timeout user 10</code></div><small>WEB → API → DISCORD</small></article>
       </div>
       <div class="system-band"><span>ANIME MODE</span><strong>DEPTH OVER COLOR / MOTION OVER NOISE</strong><b>01 → 05</b></div>
     </section>
 
     <section class="page" data-page="dashboard" aria-labelledby="dashboard-title">
       <div class="page-head dashboard-head"><div><div class="eyebrow">02 / COMMAND CENTER</div><h2 id="dashboard-title">Your server.<br><span>Your core.</span></h2></div><div id="dashboardAuth" class="auth-mini"></div></div>
-      <div id="loginGate" class="login-gate panel">
-        <div class="login-orbit"><span>A</span></div><div><div class="eyebrow">CONTROL ACCESS</div><h3>Sign in to unlock the control room</h3><p>Discord login xác thực server và quyền quản lý. Google login có thể mở dashboard; muốn dùng AFK Studio và server controls thì cần link Discord.</p><div class="login-actions"><a class="btn btn-light" href="/auth/discord">Continue with Discord</a><a class="btn btn-ghost" href="/auth/google">Continue with Google</a></div></div>
-      </div>
-
+      <div id="loginGate" class="login-gate panel"><div class="login-orbit"><span>A</span></div><div><div class="eyebrow">CONTROL ACCESS</div><h3>Sign in to unlock the control room</h3><p>Discord login xác thực server và quyền quản lý. Google login có thể mở dashboard; muốn dùng AFK Studio và server controls thì cần link Discord.</p><div class="login-actions"><a class="btn btn-light" href="/auth/discord">CONTINUE WITH DISCORD</a><a class="btn btn-ghost" href="/auth/google">CONTINUE WITH GOOGLE</a></div></div></div>
       <div id="dashboardPanel" class="dashboard-shell" hidden>
         <div class="dashboard-bar panel"><div class="field-stack"><label for="guildSelect">SERVER</label><select id="guildSelect"></select></div><div class="metrics"><div><small>LATENCY</small><strong id="metricPing">—</strong></div><div><small>MEMBERS</small><strong id="metricMembers">—</strong></div><div><small>CHANNELS</small><strong id="metricChannels">—</strong></div><div><small>COMMANDS</small><strong id="metricCommands">—</strong></div></div></div>
         <div class="control-grid">
-          <article class="panel control-card"><div class="panel-title"><div><span>BOT SYSTEM</span><h3>Runtime matrix</h3></div><i id="botDot" class="bot-dot"></i></div><div class="matrix"><div><span>gateway</span><b id="matrixGateway">waiting</b></div><div><span>database</span><b id="matrixDb">waiting</b></div><div><span>oauth</span><b>armed</b></div><div><span>voice</span><b id="matrixVoice">standby</b></div></div><div class="button-row"><button class="btn btn-light" data-quick="ping" type="button">Ping bot</button><button class="btn btn-ghost" data-quick="botinfo" type="button">Bot info</button></div></article>
-
-          <article class="panel control-card"><div class="panel-title"><div><span>VOICE CORE</span><h3>Stay in channel</h3></div><label class="switch"><input id="autoVoice" type="checkbox"><span></span></label></div><div class="field"><label for="voiceChannel">Voice channel</label><select id="voiceChannel"><option value="">Sign in first</option></select></div><div class="button-row"><button class="btn btn-light" id="saveVoice" type="button">Apply + join</button><button class="btn btn-ghost" id="leaveVoice" type="button">Leave</button></div><p class="tiny-note">Auto reconnect khi gateway hoạt động. Hosting sleep vẫn là giới hạn của plan.</p></article>
-
-          <article class="panel control-card afk-card"><div class="panel-title"><div><span>AFK STUDIO</span><h3>Build your notice</h3></div><span id="afkStatus" class="status-chip">IDLE</span></div><div class="afk-layout"><div class="afk-form"><div class="field"><label for="afkReason">AFK reason</label><input id="afkReason" maxlength="240" placeholder="đi ngủ / đi học / bận..."></div><div class="field"><label for="afkMedia">Image / GIF URL</label><input id="afkMedia" placeholder="https://.../anime.gif" type="url"></div><div class="button-row"><button class="btn btn-light" id="saveAfk" type="button">Set AFK</button><button class="btn btn-ghost" id="clearAfk" type="button">I'm back</button></div></div><div class="afk-preview"><div class="preview-media" id="afkMediaPreview"><span>PREVIEW / AFK MEDIA</span></div><strong>Aki AFK Notice</strong><small id="afkPreviewText">Your reason will appear here.</small></div></div></article>
-
-          <article class="panel control-card"><div class="panel-title"><div><span>COMMAND LAB</span><h3>Send to Discord</h3></div><span class="status-chip">LIVE</span></div><div class="command-form"><div class="command-name"><span>/</span><input id="commandName" value="announce" placeholder="announce / afk / clear / vc-join"></div><select id="textChannel"><option value="">Default text channel</option></select><textarea id="commandArgs" rows="5" placeholder='{"text":"Aki is online"}'></textarea><button class="btn btn-light" id="sendCommand" type="button">Execute ↗</button></div><pre id="responseBox" class="response-box">READY · waiting for command</pre></article>
-
+          <article class="panel control-card"><div class="panel-title"><div><span>BOT SYSTEM</span><h3>Runtime matrix</h3></div><i id="botDot" class="bot-dot"></i></div><div class="matrix"><div><span>gateway</span><b id="matrixGateway">waiting</b></div><div><span>database</span><b id="matrixDb">waiting</b></div><div><span>oauth</span><b>armed</b></div><div><span>voice</span><b id="matrixVoice">standby</b></div></div><div class="button-row"><button class="btn btn-light" data-quick="ping" type="button">PING BOT</button><button class="btn btn-ghost" data-quick="botinfo" type="button">BOT INFO</button></div></article>
+          <article class="panel control-card"><div class="panel-title"><div><span>VOICE CORE</span><h3>Stay in channel</h3></div><label class="switch"><input id="autoVoice" type="checkbox"><span></span></label></div><div class="field"><label for="voiceChannel">Voice channel</label><select id="voiceChannel"><option value="">Sign in first</option></select></div><div class="button-row"><button class="btn btn-light" id="saveVoice" type="button">APPLY + JOIN</button><button class="btn btn-ghost" id="leaveVoice" type="button">LEAVE</button></div><p class="tiny-note">Auto reconnect khi gateway hoạt động. Hosting sleep vẫn là giới hạn của plan.</p></article>
+          <article class="panel control-card afk-card"><div class="panel-title"><div><span>AFK STUDIO</span><h3>Build your notice</h3></div><span id="afkStatus" class="status-chip">IDLE</span></div><div class="afk-layout"><div class="afk-form"><div class="field"><label for="afkReason">AFK reason</label><input id="afkReason" maxlength="240" placeholder="đi ngủ / đi học / bận..."></div><div class="field"><label for="afkMedia">Image / GIF URL</label><input id="afkMedia" placeholder="https://.../anime.gif" type="url"></div><div class="button-row"><button class="btn btn-light" id="saveAfk" type="button">SET AFK</button><button class="btn btn-ghost" id="clearAfk" type="button">I'M BACK</button></div></div><div class="afk-preview"><div class="preview-media" id="afkMediaPreview"><span>PREVIEW / AFK MEDIA</span></div><strong>Aki AFK Notice</strong><small id="afkPreviewText">Your reason will appear here.</small></div></div></article>
+          <article class="panel control-card"><div class="panel-title"><div><span>COMMAND LAB</span><h3>Send to Discord</h3></div><span class="status-chip">LIVE</span></div><div class="command-form"><div class="command-name"><span>/</span><input id="commandName" value="announce" placeholder="announce / afk / clear / vc-join"></div><select id="textChannel"><option value="">Default text channel</option></select><textarea id="commandArgs" rows="5" placeholder='{"message":"Aki is online"}'></textarea><button class="btn btn-light" id="sendCommand" type="button">EXECUTE ↗</button></div><pre id="responseBox" class="response-box">READY · waiting for command</pre></article>
           <article class="panel control-card activity-card"><div class="panel-title"><div><span>ACTIVITY</span><h3>Recent events</h3></div><button class="icon-btn" id="refreshActivity" type="button" aria-label="Refresh activity">↻</button></div><div id="activityList" class="activity-list"><div class="empty-line">No events yet.</div></div></article>
         </div>
       </div>
@@ -214,10 +156,9 @@
       <div class="docs-grid"><article class="doc-card"><b>01</b><h3>Discord Developer Portal</h3><p>Tạo Application → Bot. Thêm OAuth redirect:</p><code>/auth/discord/callback</code></article><article class="doc-card"><b>02</b><h3>AFK Media</h3><p>Dùng `/afk` với reason và image/GIF URL. Bot sẽ lưu profile theo server + user.</p></article><article class="doc-card"><b>03</b><h3>Render</h3><p>Web + Postgres cùng region. Server bind `0.0.0.0:$PORT` và có `/health`.</p></article><article class="doc-card"><b>04</b><h3>24/7 Reality Check</h3><p>Render Free có thể sleep. Voice 24/7 cần plan không sleep.</p></article></div>
     </section>
   </main>
-
-  <footer class="footer"><span>AKI DEV DISCORD CONTROL SYSTEM</span><strong>WEB BY AKI DEV · ANIME CORE · 2026</strong></footer>
-
-  <script src="/socket.io/socket.io.js"></script>
-  <script src="/script.js" defer></script>
+  <footer class="footer"><span>AKI DEV DISCORD CONTROL SYSTEM</span><strong>WEB BY AKI DEV · LIVING SIGNAL · 2026</strong></footer>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/script.js" defer></script>
 </body>
 </html>
