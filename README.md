@@ -6,9 +6,9 @@ Full-stack Discord bot + web dashboard, styled monochrome/cinematic. The backend
 
 26 real bot features via slash commands:
 
-`/ping` · `/help` · `/server` · `/userinfo` · `/avatar` · `/botinfo` · `/poll` · `/8ball` · `/roll` · `/coinflip` · `/remind` · `/afk` · `/warn` · `/warnings` · `/clear` · `/slowmode` · `/lock` · `/unlock` · `/kick` · `/ban` · `/timeout` · `/role` · `/announce` · `/vc-join` · `/vc-leave` · `/auto-voice`
+`/ping` · `/help` · `/server` · `/userinfo` · `/avatar` · `/botinfo` · `/poll` · `/8ball` · `/roll` · `/coinflip` · `/remind` · `/afk [reason] [image_url] [media]` · `/warn` · `/warnings` · `/clear` · `/slowmode` · `/lock` · `/unlock` · `/kick` · `/ban` · `/timeout` · `/role` · `/announce` · `/vc-join` · `/vc-leave` · `/auto-voice`
 
-The web dashboard has guild selection, live runtime metrics, voice controls, command lab, activity feed, Discord OAuth, Google OAuth, and animated 3D UI.
+The web dashboard has guild selection, live runtime metrics, voice controls, command lab, activity feed, Discord OAuth, Google OAuth, animated 3D UI, and an AFK Studio. The AFK profile is stored per server/user and supports an optional direct image/GIF URL.
 
 ## Important
 
@@ -34,7 +34,7 @@ Create an Application + Bot and copy:
 - `DISCORD_CLIENT_ID`
 - `DISCORD_CLIENT_SECRET`
 
-Enable the Gateway intents used by this project, including Message Content for the prefix/AFK message listener.
+Enable the Gateway intents used by this project, including Message Content for the prefix/AFK message listener. The AFK slash command supports either `image_url` or an uploaded `media` attachment.
 
 OAuth2 redirect:
 
@@ -62,6 +62,6 @@ Deploy from GitHub with Render Blueprint. Set secret environment variables in th
 
 `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`.
 
-After Render gives you the final service URL, update `SITE_URL` and the OAuth redirect URIs to the exact public URL. If you change the service name/domain, change the `SITE_URL` value in Render.
+For the current deployed service, set `SITE_URL` to `https://aki-discord-control-6yfp.onrender.com` and use the exact OAuth callback `https://aki-discord-control-6yfp.onrender.com/auth/discord/callback`. If you change the service name/domain, update `SITE_URL` and the OAuth redirect URI again.
 
 For 24/7 bot + voice, use a plan that does not sleep.

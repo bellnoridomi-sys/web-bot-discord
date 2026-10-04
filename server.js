@@ -89,9 +89,11 @@ async function initDb() {
       guild_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       reason TEXT NOT NULL,
+      media_url TEXT,
       since BIGINT NOT NULL,
       PRIMARY KEY (guild_id, user_id)
     );
+    ALTER TABLE afk ADD COLUMN IF NOT EXISTS media_url TEXT;
     CREATE TABLE IF NOT EXISTS reminders (
       id BIGSERIAL PRIMARY KEY,
       guild_id TEXT NOT NULL,
@@ -174,11 +176,28 @@ async function getWarnings(guildId, userId) {
   return memory.warnings.get(`${guildId}:${userId}`) || [];
 }
 
-async function setAfk(guildId, userId, reason) {
+function normalizeMediaUrl(value) {
+  if (!value) return null;
+  try {
+    const url = new URL(String(value));
+    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Media URL phải dùng http hoặc https.');
+    if (url.toString().length > 2048) throw new Error('Media URL quá dài.');
+    return url.toString();
+  } catch (error) {
+    if (error.message === 'Media URL phải dùng http hoặc https.' || error.message === 'Media URL quá dài.') throw error;
+    throw new Error('Media URL không hợp lệ.');
+  }
+}
+
+async function setAfk(guildId, userId, reason, mediaUrl = null) {
+  const since = Date.now();
+  const cleanReason = String(reason || 'Không có lý do').trim().slice(0, 1000) || 'Không có lý do';
+  const cleanMedia = mediaUrl ? normalizeMediaUrl(mediaUrl) : null;
   if (pool) {
-    await dbQuery(`INSERT INTO afk(guild_id,user_id,reason,since) VALUES($1,$2,$3,$4)
-      ON CONFLICT(guild_id,user_id) DO UPDATE SET reason=EXCLUDED.reason,since=EXCLUDED.since`, [guildId, userId, reason, Date.now()]);
-  } else memory.afk.set(`${guildId}:${userId}`, { reason, since: Date.now() });
+    await dbQuery(`INSERT INTO afk(guild_id,user_id,reason,media_url,since) VALUES($1,$2,$3,$4,$5)
+      ON CONFLICT(guild_id,user_id) DO UPDATE SET reason=EXCLUDED.reason,media_url=EXCLUDED.media_url,since=EXCLUDED.since`, [guildId, userId, cleanReason, cleanMedia, since]);
+  } else memory.afk.set(`${guildId}:${userId}`, { reason: cleanReason, media_url: cleanMedia, since });
+  return { reason: cleanReason, media_url: cleanMedia, since };
 }
 async function clearAfk(guildId, userId) {
   if (pool) await dbQuery('DELETE FROM afk WHERE guild_id=$1 AND user_id=$2', [guildId, userId]);
@@ -190,6 +209,17 @@ async function getAfk(guildId, userId) {
     return r.rows[0] || null;
   }
   return memory.afk.get(`${guildId}:${userId}`) || null;
+}
+function afkPayload(memberUser, afk) {
+  const username = memberUser?.globalName || memberUser?.username || 'User';
+  const embed = new EmbedBuilder()
+    .setColor(0x161616)
+    .setAuthor({ name: `💤 ${username} đang AFK`, ...(memberUser?.displayAvatarURL ? { iconURL: memberUser.displayAvatarURL({ size: 128 }) } : {}) })
+    .setDescription(`> ${String(afk.reason || 'Không có lý do').slice(0, 1000)}`)
+    .setFooter({ text: 'Aki Dev · AFK System' })
+    .setTimestamp(Number(afk.since) || Date.now());
+  if (afk.media_url) embed.setImage(afk.media_url);
+  return { embeds: [embed], allowedMentions: { parse: [] } };
 }
 
 async function scheduleReminder(guildId, userId, channelId, text, executeAt) {
@@ -369,7 +399,7 @@ const commands = [
   new SlashCommandBuilder().setName('roll').setDescription('Tung xúc xắc.').addIntegerOption(o => o.setName('sides').setDescription('Số mặt (2–1000)').setMinValue(2).setMaxValue(1000).setRequired(false)),
   new SlashCommandBuilder().setName('coinflip').setDescription('Tung đồng xu.'),
   new SlashCommandBuilder().setName('remind').setDescription('Đặt lời nhắc theo giây.').addIntegerOption(o => o.setName('seconds').setDescription('Số giây').setMinValue(5).setMaxValue(604800).setRequired(true)).addStringOption(o => o.setName('text').setDescription('Nội dung').setRequired(true)),
-  new SlashCommandBuilder().setName('afk').setDescription('Bật trạng thái AFK.').addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
+  new SlashCommandBuilder().setName('afk').setDescription('Bật AFK + ảnh/GIF tuỳ chọn.').addStringOption(o => o.setName('reason').setDescription('Lý do').setMaxLength(1000).setRequired(false)).addStringOption(o => o.setName('image_url').setDescription('URL ảnh/GIF (https://...)').setMaxLength(2048).setRequired(false)).addAttachmentOption(o => o.setName('media').setDescription('Upload ảnh/GIF trực tiếp').setRequired(false)),
   new SlashCommandBuilder().setName('warn').setDescription('Cảnh cáo thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(true)),
   new SlashCommandBuilder().setName('warnings').setDescription('Xem cảnh cáo.').addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)),
   new SlashCommandBuilder().setName('clear').setDescription('Xoá tin nhắn gần nhất.').setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages.toString()).addIntegerOption(o => o.setName('amount').setDescription('1–100').setMinValue(1).setMaxValue(100).setRequired(true)),
@@ -389,7 +419,7 @@ const commands = [
 const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Nhắc việc'],
-  ['afk', 'AFK'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
+  ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
   ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['timeout', 'Timeout'], ['role', 'Quản lý role'],
   ['announce', 'Thông báo'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice']
 ];
@@ -500,8 +530,9 @@ async function runCommand(name, ctx) {
       return reply(`⏰ Đã đặt nhắc trong **${seconds}s**.`);
     }
     case 'afk': {
-      await setAfk(guild.id, userId, String(args.reason || 'Không có lý do'));
-      return reply(`💤 ${userName} đang **AFK** · ${args.reason || 'Không có lý do'}`);
+      const media = args.media_url || args.image_url || null;
+      const afk = await setAfk(guild.id, userId, args.reason, media);
+      return afkPayload(user?.user || guild.client.users.cache.get(userId), afk);
     }
     case 'warn': {
       ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
@@ -613,7 +644,7 @@ function extractInteractionArgs(interaction) {
   if (interaction.commandName === '8ball') out.question = interaction.options.getString('question');
   if (interaction.commandName === 'roll') out.sides = interaction.options.getInteger('sides');
   if (interaction.commandName === 'remind') { out.seconds = interaction.options.getInteger('seconds'); out.text = interaction.options.getString('text'); }
-  if (interaction.commandName === 'afk') out.reason = interaction.options.getString('reason') || undefined;
+  if (interaction.commandName === 'afk') { out.reason = interaction.options.getString('reason') || undefined; out.media_url = interaction.options.getAttachment('media')?.url || interaction.options.getString('image_url') || undefined; }
   if (interaction.commandName === 'clear' || interaction.commandName === 'slowmode') out[interaction.commandName === 'clear' ? 'amount' : 'seconds'] = interaction.options.getInteger(interaction.commandName === 'clear' ? 'amount' : 'seconds');
   if (interaction.commandName === 'role') { out.mode = interaction.options.getString('mode'); out.user = getUserId(); out.role = interaction.options.getRole('role')?.id; }
   if (interaction.commandName === 'announce') out.message = interaction.options.getString('message');
@@ -666,10 +697,12 @@ bot.on('messageCreate', async message => {
   try {
     const afkAuthor = await getAfk(message.guild.id, message.author.id);
     if (afkAuthor) await clearAfk(message.guild.id, message.author.id).then(() => message.reply(`👋 Welcome back, **${message.author.globalName || message.author.username}**.`).catch(() => {}));
+    const seenAfk = new Set();
     for (const mentioned of message.mentions.users.values()) {
-      if (mentioned.bot) continue;
+      if (mentioned.bot || seenAfk.has(mentioned.id)) continue;
+      seenAfk.add(mentioned.id);
       const afk = await getAfk(message.guild.id, mentioned.id);
-      if (afk) await message.reply(`💤 **${mentioned.globalName || mentioned.username}** đang AFK: ${afk.reason}`).catch(() => {});
+      if (afk) await message.reply(afkPayload(mentioned, afk)).catch(() => {});
     }
     const cfg = await getConfig(message.guild.id);
     const prefix = cfg.prefix || '!';
@@ -678,10 +711,15 @@ bot.on('messageCreate', async message => {
     if (!name || !commands.some(c => c.name === name)) return;
     const basicMap = {
       ping: {}, help: {}, server: {}, botinfo: {}, coinflip: {},
-      '8ball': { question: parts.join(' ') }, roll: { sides: Number(parts[0]) || 6 }, remind: { seconds: Number(parts[0]), text: parts.slice(1).join(' ') }, afk: { reason: parts.join(' ') },
+      '8ball': { question: parts.join(' ') }, roll: { sides: Number(parts[0]) || 6 }, remind: { seconds: Number(parts[0]), text: parts.slice(1).join(' ') },
       announce: { message: parts.join(' ') }, clear: { amount: Number(parts[0]) }, slowmode: { seconds: Number(parts[0]) }, lock: {}, unlock: {},
       'vc-leave': {}
     };
+    if (name === 'afk') {
+      const urlPart = parts.find(part => /^https?:\/\//i.test(part));
+      const reason = parts.filter(part => part !== urlPart).join(' ').trim();
+      basicMap.afk = { reason, media_url: urlPart };
+    }
     if (!basicMap[name]) return;
     const payload = await runCommand(name, { guild: message.guild, userId: message.author.id, userName: message.member?.displayName, channel: message.channel, args: basicMap[name], source: 'prefix' });
     await message.reply(payload);
@@ -754,6 +792,47 @@ app.put('/api/guilds/:guildId/config', requireAuth, async (req, res) => {
   } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
 });
 
+app.get('/api/guilds/:guildId/afk', requireAuth, async (req, res) => {
+  try {
+    const guild = bot.guilds.cache.get(req.params.guildId);
+    const meta = (req.session.guilds || []).find(x => x.id === req.params.guildId);
+    if (!guild || !meta) return res.status(404).json({ error: 'BOT_NOT_IN_GUILD' });
+    const userId = req.session.user.discordId || (req.session.user.provider === 'discord' ? req.session.user.id : null);
+    if (!userId) return res.status(409).json({ error: 'DISCORD_LINK_REQUIRED' });
+    const afk = await getAfk(guild.id, userId);
+    res.json({ active: Boolean(afk), afk });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.put('/api/guilds/:guildId/afk', requireAuth, async (req, res) => {
+  try {
+    const guild = bot.guilds.cache.get(req.params.guildId);
+    const meta = (req.session.guilds || []).find(x => x.id === req.params.guildId);
+    if (!guild || !meta) return res.status(404).json({ error: 'BOT_NOT_IN_GUILD' });
+    const userId = req.session.user.discordId || (req.session.user.provider === 'discord' ? req.session.user.id : null);
+    if (!userId) return res.status(409).json({ error: 'DISCORD_LINK_REQUIRED' });
+    const { reason = '', media_url = '' } = req.body || {};
+    const afk = await setAfk(guild.id, userId, reason, media_url || null);
+    await addActivity(guild.id, userId, 'web:afk', media_url ? 'AFK profile updated with media' : 'AFK profile updated');
+    const profile = await guild.client.users.fetch(userId).catch(() => null);
+    if (!profile) return res.json({ ok: true, afk });
+    res.json({ ok: true, afk, preview: afkPayload(profile, afk) });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+});
+
+app.delete('/api/guilds/:guildId/afk', requireAuth, async (req, res) => {
+  try {
+    const guild = bot.guilds.cache.get(req.params.guildId);
+    const meta = (req.session.guilds || []).find(x => x.id === req.params.guildId);
+    if (!guild || !meta) return res.status(404).json({ error: 'BOT_NOT_IN_GUILD' });
+    const userId = req.session.user.discordId || (req.session.user.provider === 'discord' ? req.session.user.id : null);
+    if (!userId) return res.status(409).json({ error: 'DISCORD_LINK_REQUIRED' });
+    await clearAfk(guild.id, userId);
+    await addActivity(guild.id, userId, 'web:afk:off', 'AFK cleared');
+    res.json({ ok: true });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+});
+
 app.post('/api/guilds/:guildId/command', requireAuth, async (req, res) => {
   try {
     const { guild } = await requireGuildControl(req, res);
@@ -800,11 +879,8 @@ app.get('/api/overview', requireAuth, async (req, res) => {
   });
 });
 
-app.use(express.static('.', { extensions: ['html'] }));
-
-app.get('/{*splat}', (req, res) => {
-  res.sendFile(fileURLToPath(new URL('./index.html', import.meta.url)));
-});
+app.use(express.static('public', { extensions: ['html'] }));
+app.get('/{*splat}', (req, res) => res.sendFile(fileURLToPath(new URL('./public/index.html', import.meta.url))));
 
 setInterval(() => {
   const now = Date.now();
