@@ -3,6 +3,8 @@ import express from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import http from 'node:http';
+import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { Server as SocketIOServer } from 'socket.io';
