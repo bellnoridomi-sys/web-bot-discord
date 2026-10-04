@@ -25,6 +25,36 @@ function setupRoutes(){
 function renderCommands(){
   $('commandCatalog').innerHTML=COMMANDS.map(([name,desc],i)=>`<article class="command-item"><code>/${escapeHtml(name)}</code><p>${escapeHtml(desc)}</p><small>#${String(i+1).padStart(2,'0')}</small></article>`).join('');
 }
+
+function setupManualGallery(){
+  const gallery = document.querySelector('#manualGallery');
+  if(!gallery) return;
+  const cards = [...gallery.querySelectorAll('.manual-card')];
+  const status = document.querySelector('#manualStatus');
+  const labels = {core:'01 / AKI CORE · GATEWAY + API', afk:'02 / AFK STUDIO · IMAGE + GIF', voice:'03 / VOICE CORE · RECONNECT'};
+  cards.forEach((card, index)=>{
+    card.addEventListener('pointermove', e=>{
+      if(matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      const r=card.getBoundingClientRect(), x=(e.clientX-r.left)/r.width-.5, y=(e.clientY-r.top)/r.height-.5;
+      card.style.setProperty('--ry', `${x*10}deg`);
+      card.style.setProperty('--rx', `${y*-8}deg`);
+    });
+    card.addEventListener('pointerleave', ()=>{card.style.removeProperty('--ry');card.style.removeProperty('--rx');});
+    card.addEventListener('focus', ()=>card.classList.add('is-selected'));
+    card.addEventListener('blur', ()=>card.classList.remove('is-selected'));
+    card.addEventListener('click', ()=>{
+      cards.forEach(c=>c.classList.remove('is-selected'));
+      card.classList.add('is-selected');
+      if(status) status.textContent=labels[card.dataset.manual]||'SELECTED';
+      showToast(card.dataset.manual==='core'?'Aki Core selected — open Control to use it.':card.dataset.manual==='afk'?'AFK Studio selected — image/GIF ready.':'Voice Core selected — auto reconnect standby.');
+    });
+    card.addEventListener('keydown', e=>{
+      if(e.key==='ArrowRight'){e.preventDefault();cards[(index+1)%cards.length].focus();}
+      if(e.key==='ArrowLeft'){e.preventDefault();cards[(index-1+cards.length)%cards.length].focus();}
+    });
+  });
+}
+
 function setupVisuals(){
   const canvas=$('space'),ctx=canvas?.getContext('2d'); if(!ctx)return;
   let w=innerWidth,h=innerHeight,dpr=Math.min(devicePixelRatio||1,2),stars=[];
@@ -46,7 +76,7 @@ function renderLoggedIn(){
 }
 function updateTop(){const ready=!!state.me?.bot?.ready;$('topStatus').textContent=ready?'BOT ONLINE':'WEB ONLINE';$('heroPing').textContent=ready?`${state.me.bot.ping}ms`:'—';}
 async function boot(){
-  renderCommands();setupRoutes();setupVisuals();setupControls();renderLoggedOut();
+  renderCommands();setupRoutes();setupVisuals();setupManualGallery();setupControls();renderLoggedOut();
   try{state.me=await fetchJson('/api/me');}catch{state.me={authenticated:false};}
   if(state.me.authenticated){renderLoggedIn();populateGuilds();}updateTop();refreshOverview();
   if(window.io){state.socket=io({transports:['websocket','polling']});state.socket.on('bot-status',()=>{refreshOverview();});state.socket.on('activity',()=>{if(state.route==='dashboard')refreshActivity();});}
