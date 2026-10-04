@@ -65,7 +65,3 @@ Deploy from GitHub with Render Blueprint. Set secret environment variables in th
 For the current deployed service, set `SITE_URL` to `https://aki-discord-control-6yfp.onrender.com` and use the exact OAuth callback `https://aki-discord-control-6yfp.onrender.com/auth/discord/callback`. If you change the service name/domain, update `SITE_URL` and the OAuth redirect URI again.
 
 For 24/7 bot + voice, use a plan that does not sleep.
-
-
-## GitHub layout
-Keep the web assets inside `public/`: `public/index.html`, `public/style.css`, `public/script.js`. The server has a fallback to the repository root for safer manual uploads.

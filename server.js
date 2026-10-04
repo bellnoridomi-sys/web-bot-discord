@@ -5,8 +5,6 @@ import rateLimit from 'express-rate-limit';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
 import {
@@ -890,13 +888,25 @@ const ROOT_INDEX = path.join(ROOT_DIR, 'index.html');
 const ROOT_CSS = path.join(ROOT_DIR, 'style.css');
 const ROOT_JS = path.join(ROOT_DIR, 'script.js');
 
-// Prefer /public only when the complete UI bundle exists.
-// This prevents a partially uploaded public/index.html from hiding root assets.
-const publicReady = [PUBLIC_INDEX, PUBLIC_CSS, PUBLIC_JS].every(file => fs.existsSync(file) && fs.statSync(file).size > 64);
-const WEB_DIR = publicReady ? PUBLIC_DIR : ROOT_DIR;
-const INDEX_FILE = publicReady ? PUBLIC_INDEX : ROOT_INDEX;
+// Use /public only when its complete frontend bundle exists.
+// A partial /public folder must never make /style.css or /script.js fall through to index.html.
+const PUBLIC_BUNDLE_READY = [PUBLIC_INDEX, PUBLIC_CSS, PUBLIC_JS].every(file => fs.existsSync(file) && fs.statSync(file).size > 64);
+const WEB_DIR = PUBLIC_BUNDLE_READY ? PUBLIC_DIR : ROOT_DIR;
+const INDEX_FILE = PUBLIC_BUNDLE_READY ? PUBLIC_INDEX : ROOT_INDEX;
 
-app.use(express.static(WEB_DIR, { extensions: ['html'], index: false }));
+app.get('/style.css', (req, res, next) => {
+  const file = PUBLIC_BUNDLE_READY ? PUBLIC_CSS : ROOT_CSS;
+  if (fs.existsSync(file)) return res.sendFile(file);
+  next();
+});
+
+app.get('/script.js', (req, res, next) => {
+  const file = PUBLIC_BUNDLE_READY ? PUBLIC_JS : ROOT_JS;
+  if (fs.existsSync(file)) return res.sendFile(file);
+  next();
+});
+
+app.use(express.static(WEB_DIR, { extensions: ['html'] }));
 app.get('/{*splat}', (req, res) => res.sendFile(INDEX_FILE));
 
 setInterval(() => {
