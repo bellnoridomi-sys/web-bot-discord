@@ -1,158 +1,142 @@
 <!doctype html>
 <html lang="vi">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="theme-color" content="#020202" />
-  <meta name="description" content="Aki Dev — anime-inspired monochrome Discord control system." />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#050505">
+  <meta name="description" content="Aki Dev — anime-inspired monochrome Discord control dashboard.">
   <title>Aki Dev — Discord Control</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23020202'/%3E%3Cpath d='M25 76 50 20l25 56h-13l-5-12H43l-5 12H25Zm23-24h5l-3-8-2 8Z' fill='white'/%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23050505'/%3E%3Cpath d='M20 78 50 18l30 60H66l-5-12H39l-5 12H20Zm24-25h12l-6-16-6 16Z' fill='white'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css" />
-  <style id="aki-critical-ui">
-    html,body{margin:0;background:#020202;color:#fff} 
-    main{min-height:100vh}
-    .view{display:none!important}
-    .view.active{display:block!important;opacity:1!important;visibility:visible!important;transform:none!important;filter:none!important;pointer-events:auto!important}
-    .reveal{opacity:1!important;visibility:visible!important}
-    .transition-flash{opacity:0!important;pointer-events:none!important}
-  </style>
-
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div class="ambient ambient-a"></div>
-  <div class="ambient ambient-b"></div>
-  <div class="noise"></div>
+  <div class="bg-noise"></div>
+  <div class="bg-grid"></div>
+  <div class="bg-orb orb-1"></div>
+  <div class="bg-orb orb-2"></div>
   <canvas id="space" aria-hidden="true"></canvas>
-  <div class="cursor-glow" id="cursorGlow"></div>
-  <div class="transition-flash" id="transitionFlash"></div>
+  <div id="cursorGlow" class="cursor-glow" aria-hidden="true"></div>
+  <div id="transitionFlash" class="transition-flash" aria-hidden="true"></div>
 
-  <header class="topbar glass">
-    <a class="brand" href="#home" data-route="home" aria-label="Aki Dev Home">
+  <header class="topbar">
+    <a class="brand" href="#home" data-route="home">
       <span class="brand-mark">A</span>
-      <span class="brand-copy"><b>AKI</b><small>DEV / BLACK SIGNAL</small></span>
+      <span class="brand-text"><strong>AKI</strong><small>DEV / BLACK SIGNAL</small></span>
     </a>
-    <nav class="nav" id="nav">
-      <a href="#home" data-route="home" class="active">Home</a>
+    <nav class="nav" id="nav" aria-label="Main navigation">
+      <a href="#home" data-route="home">Home</a>
       <a href="#features" data-route="features">System</a>
       <a href="#dashboard" data-route="dashboard">Control</a>
       <a href="#commands" data-route="commands">Commands</a>
       <a href="#docs" data-route="docs">Docs</a>
     </nav>
     <div class="top-actions">
-      <div class="status-pill"><i></i><span id="topStatus">SYSTEM READY</span></div>
-      <button class="button button-ghost" id="authButton">Sign in</button>
+      <span class="status-pill"><i></i><span id="topStatus">WEB ONLINE</span></span>
+      <button class="btn btn-ghost btn-small" id="authButton" type="button">Sign in</button>
     </div>
   </header>
 
-  <main>
-    <section class="view active" data-view="home">
-      <div class="hero-shell">
-        <div class="hero-copy reveal">
-          <div class="eyebrow"><span>◈</span> MONOCHROME · ANIME CORE · DISCORD CONTROL</div>
+  <main id="app">
+    <section class="page active" data-page="home" aria-labelledby="home-title">
+      <div class="home-layout">
+        <div class="hero-copy">
+          <div class="eyebrow"><span>◈</span> MONOCHROME / ANIME CORE / DISCORD CONTROL</div>
           <div class="hero-kana">黒 · A K I · 黒 · CONTROL</div>
-          <h1>Control Discord.<br><em>Enter the anime core.</em></h1>
-          <p>Dashboard trắng-đen nhưng không hề basic: chiều sâu 3D, motion layers, digital sigils, realtime bot telemetry và control từ web → API → Discord thật. <strong>WEB BY AKI DEV</strong>.</p>
-          <div class="hero-cta">
-            <a class="button button-light magnetic" href="#dashboard" data-route="dashboard">Open control room <span>↗</span></a>
-            <a class="button button-ghost magnetic" href="#features" data-route="features">Explore core</a>
-          </div>
-          <div class="hero-meta">
-            <div><small>COMMANDS</small><b id="heroCommands">26</b><span>registered</span></div>
-            <div><small>AFK MEDIA</small><b>GIF</b><span>personal profiles</span></div>
-            <div><small>VOICE</small><b>AUTO</b><span>reconnect</span></div>
-          </div>
-        </div>
-
-        <div class="hero-visual reveal">
-          <div class="holo-stage" id="orbital">
-            <div class="scene-grid"></div>
-            <div class="floating-card fc-a"><span>01</span><b>GATEWAY</b><small id="heroPing">—</small></div>
-            <div class="floating-card fc-b"><span>02</span><b>AFK MEDIA</b><small>IMAGE / GIF</small></div>
-            <div class="floating-card fc-c"><span>03</span><b>VOICE CORE</b><small>RECONNECT</small></div>
-            <div class="katana-line kl-a"></div><div class="katana-line kl-b"></div>
-            <div class="anime-sigil">
-              <div class="sigil-ring r1"></div><div class="sigil-ring r2"></div><div class="sigil-ring r3"></div>
-              <div class="sigil-core"><span>A</span><small>アキ</small></div>
-              <div class="sigil-slice"></div>
-              <div class="orbit-orb o1"></div><div class="orbit-orb o2"></div><div class="orbit-orb o3"></div>
+          <h1 id="home-title">Control Discord.<br><span>Enter the anime core.</span></h1>
+          <p class="hero-lead">Một control room trắng-đen có chiều sâu: glass, motion, HUD, 3D sigil và những thao tác đi từ web → API → Discord.</p>
+          <div class="hero-actions">
+            <div class="sp">
+              <button class="sparkle-button" id="sparkleControl" type="button" data-route="dashboard" aria-label="Open control room">
+                <span class="spark"></span><span class="backdrop"></span>
+                <svg class="sparkle" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.187 8.096 15 5.25l.813 2.846a5.52 5.52 0 0 0 3.09 3.09L21.75 12l-2.846.813a5.52 5.52 0 0 0-3.09 3.09L15 18.75l-.813-2.846a5.52 5.52 0 0 0-3.09-3.09L8.25 12l2.846-.813a5.52 5.52 0 0 0 3.09-3.091ZM6 14.25l.259 1.035a3.1 3.1 0 0 0 2.455 2.455L9.75 18l-1.036.259a3.1 3.1 0 0 0-2.455 2.456L6 21.75l-.259-1.035a3.1 3.1 0 0 0-2.455-2.456L2.25 18l1.036-.26a3.1 3.1 0 0 0 2.455-2.455L6 14.25ZM6.5 4l.197.592a2 2 0 0 0 1.272 1.272L8.5 5.5l-.592-.197a2 2 0 0 0-1.272-1.272L6.5 4Z"/></svg>
+                <span class="text">OPEN CONTROL ROOM</span><span class="spark-arrow">↗</span>
+              </button>
+              <div class="particle-pen" aria-hidden="true">
+                <i class="particle p1">✦</i><i class="particle p2">✦</i><i class="particle p3">✧</i><i class="particle p4">✦</i><i class="particle p5">✧</i>
+              </div>
             </div>
-            <div class="scan-hud"><span>AKI / 影</span><b>ONLINE SIGNAL</b><i></i></div>
+            <a class="btn btn-ghost btn-large" href="#features" data-route="features">Explore system <span>↓</span></a>
+          </div>
+          <div class="hero-stats">
+            <div class="stat-card"><small>COMMANDS</small><strong id="heroCommands">26</strong><span>registered</span></div>
+            <div class="stat-card"><small>AFK MEDIA</small><strong>GIF</strong><span>personal profiles</span></div>
+            <div class="stat-card"><small>VOICE</small><strong>AUTO</strong><span>reconnect core</span></div>
           </div>
         </div>
+
+        <div class="hero-stage" id="orbital">
+          <div class="stage-surface"></div>
+          <div class="stage-ring ring-a"></div><div class="stage-ring ring-b"></div><div class="stage-ring ring-c"></div>
+          <div class="hud-card hud-a"><span>01 / GATEWAY</span><b id="heroPing">—</b></div>
+          <div class="hud-card hud-b"><span>02 / AFK MEDIA</span><b>IMAGE / GIF</b></div>
+          <div class="hud-card hud-c"><span>03 / VOICE CORE</span><b>RECONNECT</b></div>
+          <div class="anime-core">
+            <div class="eye-glow"></div>
+            <div class="core-orbit orbit-one"></div>
+            <div class="core-orbit orbit-two"></div>
+            <div class="core-orbit orbit-three"></div>
+            <div class="core-sigil"><span>A</span><small>アキ</small></div>
+            <div class="blade blade-one"></div><div class="blade blade-two"></div>
+            <div class="core-dot dot-one"></div><div class="core-dot dot-two"></div><div class="core-dot dot-three"></div>
+          </div>
+          <div class="scan-tag"><span>AKI / 影</span><b>ONLINE SIGNAL</b><i></i></div>
+        </div>
       </div>
-      <div class="marquee"><div>AKI DEV · AFK MEDIA · ANIME CORE · 3D CONTROL · MODERATION · VOICE · OAUTH · REALTIME · WEB → DISCORD · AKI DEV · AFK MEDIA · ANIME CORE · 3D CONTROL ·</div></div>
-      <div class="hero-bottom reveal">
-        <div class="hero-orbit-copy"><span>DESIGN NOTE</span><p>Không dùng màu neon để tạo “màu mè”. Chúng ta làm mọi thứ bằng <b>contrast, depth, glass, shadow, light</b>.</p></div>
-        <div class="signature"><span>WEB BY</span><strong>AKI DEV</strong></div>
-      </div>
+      <div class="marquee"><span>AKI DEV · AFK MEDIA · ANIME CORE · 3D CONTROL · MODERATION · VOICE · OAUTH · REALTIME · WEB → DISCORD · </span><span>AKI DEV · AFK MEDIA · ANIME CORE · 3D CONTROL · MODERATION · VOICE · OAUTH · REALTIME · WEB → DISCORD · </span></div>
+      <div class="signature-row"><p><span>DESIGN NOTE</span> contrast / depth / glass / shadow / light</p><strong>WEB BY AKI DEV</strong></div>
     </section>
 
-    <section class="view" data-view="features">
-      <div class="section-head reveal"><div><span class="eyebrow">01 / SYSTEM</span><h2>Built to feel<br><em>alive.</em></h2></div><p>Không phải dashboard chỉ đổi vài dòng chữ. Các thao tác đi qua backend và Discord API thật, còn giao diện được xây như một control room anime-inspired.</p></div>
+    <section class="page" data-page="features" aria-labelledby="features-title">
+      <div class="page-head"><div><div class="eyebrow">01 / SYSTEM</div><h2 id="features-title">Built to feel <span>alive.</span></h2></div><p>Không dùng neon để gây ấn tượng. Dùng tương phản, không gian 3D và motion có chủ đích để mỗi panel có cảm giác như một thiết bị thật.</p></div>
       <div class="feature-grid">
-        <article class="feature-card tall reveal tilt"><span>01</span><div class="feature-icon glyph">◌</div><h3>Live Bot Core</h3><p>Gateway latency, guild count, command registry và trạng thái bot cập nhật realtime qua Socket.IO.</p><div class="card-foot">REAL-TIME / SOCKET.IO</div><div class="card-glow"></div></article>
-        <article class="feature-card reveal tilt"><span>02</span><div class="feature-icon glyph">✦</div><h3>AFK Memory</h3><p>AFK không chỉ là text. Mỗi người có thể gắn ảnh hoặc GIF riêng; bot hiển thị media khi bị tag.</p><div class="card-foot">IMAGE / GIF / EMBED</div><div class="card-glow"></div></article>
-        <article class="feature-card reveal tilt"><span>03</span><div class="feature-icon glyph">◍</div><h3>Auto Voice</h3><p>Chọn voice channel từ web, bot tự vào và tự reconnect khi voice connection bị đẩy ra.</p><div class="card-foot">AUTO-RECONNECT</div><div class="card-glow"></div></article>
-        <article class="feature-card reveal tilt"><span>04</span><div class="feature-icon glyph">⌁</div><h3>OAuth Gate</h3><p>Discord OAuth2 với state validation, session cookie HttpOnly và quyền quản lý server theo Discord.</p><div class="card-foot">OAUTH2 / ACCESS CONTROL</div><div class="card-glow"></div></article>
-        <article class="feature-card wide reveal tilt"><span>05</span><div class="feature-split"><div><div class="feature-icon glyph">▦</div><h3>Command Deck</h3><p>Web có Command Lab để chạy lệnh thật vào Discord và Activity Feed để theo dõi thao tác vừa xảy ra.</p></div><div class="mini-console"><b>aki://core</b><p><span>01</span> /afk <em>reason + image.gif</em></p><p><span>02</span> /auto-voice <em>enabled</em></p><p><span>03</span> /announce <em>server online</em></p><p><span>04</span> /timeout <em>user / minutes</em></p></div></div><div class="card-foot">WEB → API → DISCORD</div><div class="card-glow"></div></article>
+        <article class="feature-card tall"><div class="feature-number">01</div><div class="feature-icon">◌</div><h3>Live Bot Core</h3><p>Gateway latency, guild count và command registry được lấy từ backend thay vì dữ liệu giả.</p><small>REAL-TIME / SOCKET.IO</small></article>
+        <article class="feature-card"><div class="feature-number">02</div><div class="feature-icon">✦</div><h3>AFK Memory</h3><p>Mỗi member có reason và media riêng. Khi bị tag, bot có thể gửi ảnh/GIF trong embed.</p><small>IMAGE / GIF / EMBED</small></article>
+        <article class="feature-card"><div class="feature-number">03</div><div class="feature-icon">◍</div><h3>Auto Voice</h3><p>Chọn voice channel, bật auto-voice và bot tự phục hồi connection khi bị disconnect.</p><small>AUTO-RECONNECT</small></article>
+        <article class="feature-card"><div class="feature-number">04</div><div class="feature-icon">⌁</div><h3>OAuth Gate</h3><p>Discord OAuth2 dùng session để xác định người dùng và server mà họ có quyền quản lý.</p><small>OAUTH2 / ACCESS</small></article>
+        <article class="feature-card wide"><div class="wide-copy"><div class="feature-number">05</div><div class="feature-icon">▦</div><h3>Command Deck</h3><p>Web có command lab, activity feed, voice controls và AFK Studio. Không phải nút trang trí.</p></div><div class="terminal"><span>AKI://CORE</span><code>&gt; /afk reason:offline image.gif<br>&gt; /auto-voice enabled<br>&gt; /announce online<br>&gt; /timeout user 10</code></div><small>WEB → API → DISCORD</small></article>
       </div>
-      <div class="feature-band glass reveal"><span>ANIME MODE</span><b>depth over color / motion over noise</b><i>01 → 05</i></div>
-      <div class="section-note">* 24/7 thực tế phụ thuộc plan hosting; Render Free có thể sleep. Bot vẫn reconnect khi service hoạt động lại.</div>
+      <div class="system-band"><span>ANIME MODE</span><strong>DEPTH OVER COLOR / MOTION OVER NOISE</strong><b>01 → 05</b></div>
     </section>
 
-    <section class="view" data-view="dashboard">
-      <div class="section-head dashboard-head reveal"><div><span class="eyebrow">02 / COMMAND CENTER</span><h2>Your server.<br><em>Your core.</em></h2></div><div class="dashboard-auth" id="dashboardAuth"></div></div>
-      <div class="dashboard-empty glass reveal" id="loginGate">
-        <div class="empty-orbit"><span>A</span></div>
-        <h3>Sign in to unlock the control room</h3>
-        <p>Discord login dùng để xác thực server và quyền quản lý. Google login có thể vào dashboard; muốn điều khiển server và dùng AFK Studio cần link Discord.</p>
-        <div class="login-actions"><a class="button button-light" href="/auth/discord">Continue with Discord</a><a class="button button-ghost" href="/auth/google">Continue with Google</a></div>
+    <section class="page" data-page="dashboard" aria-labelledby="dashboard-title">
+      <div class="page-head dashboard-head"><div><div class="eyebrow">02 / COMMAND CENTER</div><h2 id="dashboard-title">Your server.<br><span>Your core.</span></h2></div><div id="dashboardAuth" class="auth-mini"></div></div>
+      <div id="loginGate" class="login-gate panel">
+        <div class="login-orbit"><span>A</span></div><div><div class="eyebrow">CONTROL ACCESS</div><h3>Sign in to unlock the control room</h3><p>Discord login xác thực server và quyền quản lý. Google login có thể mở dashboard; muốn dùng AFK Studio và server controls thì cần link Discord.</p><div class="login-actions"><a class="btn btn-light" href="/auth/discord">Continue with Discord</a><a class="btn btn-ghost" href="/auth/google">Continue with Google</a></div></div>
       </div>
-      <div class="dashboard" id="dashboardPanel" hidden>
-        <div class="dashboard-top glass reveal">
-          <div class="server-pick"><label>SERVER</label><select id="guildSelect"></select></div>
-          <div class="metrics"><div><small>LATENCY</small><b id="metricPing">—</b></div><div><small>MEMBERS</small><b id="metricMembers">—</b></div><div><small>CHANNELS</small><b id="metricChannels">—</b></div><div><small>COMMANDS</small><b id="metricCommands">—</b></div></div>
-        </div>
-        <div class="dashboard-grid">
-          <div class="panel glass system-panel reveal tilt"><div class="panel-title"><div><span>BOT SYSTEM</span><h3>Runtime matrix</h3></div><span class="online-dot" id="botDot"></span></div><div class="matrix"><div><span>gateway</span><b id="matrixGateway">waiting</b></div><div><span>database</span><b id="matrixDb">waiting</b></div><div><span>oauth</span><b>armed</b></div><div><span>voice</span><b id="matrixVoice">standby</b></div></div><div class="button-row"><button class="button button-light" data-quick="ping">Ping bot</button><button class="button button-ghost" data-quick="botinfo">Bot info</button></div></div>
 
-          <div class="panel glass voice-panel reveal tilt"><div class="panel-title"><div><span>VOICE CORE</span><h3>Stay in channel</h3></div><div class="switch-wrap"><input id="autoVoice" type="checkbox"><label for="autoVoice">AUTO</label></div></div><label class="field-label">Voice channel</label><select id="voiceChannel"></select><div class="voice-actions"><button class="button button-light" id="saveVoice">Apply + join</button><button class="button button-ghost" id="leaveVoice">Leave</button></div><p class="tiny-note">Bot tự reconnect khi mất voice. Hosting sleep vẫn là giới hạn bên ngoài bot.</p></div>
+      <div id="dashboardPanel" class="dashboard-shell" hidden>
+        <div class="dashboard-bar panel"><div class="field-stack"><label for="guildSelect">SERVER</label><select id="guildSelect"></select></div><div class="metrics"><div><small>LATENCY</small><strong id="metricPing">—</strong></div><div><small>MEMBERS</small><strong id="metricMembers">—</strong></div><div><small>CHANNELS</small><strong id="metricChannels">—</strong></div><div><small>COMMANDS</small><strong id="metricCommands">—</strong></div></div></div>
+        <div class="control-grid">
+          <article class="panel control-card"><div class="panel-title"><div><span>BOT SYSTEM</span><h3>Runtime matrix</h3></div><i id="botDot" class="bot-dot"></i></div><div class="matrix"><div><span>gateway</span><b id="matrixGateway">waiting</b></div><div><span>database</span><b id="matrixDb">waiting</b></div><div><span>oauth</span><b>armed</b></div><div><span>voice</span><b id="matrixVoice">standby</b></div></div><div class="button-row"><button class="btn btn-light" data-quick="ping" type="button">Ping bot</button><button class="btn btn-ghost" data-quick="botinfo" type="button">Bot info</button></div></article>
 
-          <div class="panel glass afk-panel reveal tilt"><div class="panel-title"><div><span>AFK STUDIO</span><h3>Build your own notice</h3></div><span class="media-chip">IMAGE / GIF</span></div><label class="field-label" for="afkReason">AFK reason</label><textarea id="afkReason" rows="3" maxlength="1000" placeholder="Ví dụ: học bài, ngủ, đi ăn..."></textarea><label class="field-label" for="afkMedia">Media URL</label><input id="afkMedia" type="url" maxlength="2048" placeholder="https://.../your-anime-gif.gif"><div class="afk-preview" id="afkPreview" hidden><img id="afkPreviewImage" alt="AFK media preview"><span>PREVIEW / AFK MEDIA</span></div><div class="afk-actions"><button class="button button-light" id="saveAfk">Set AFK</button><button class="button button-ghost" id="clearAfk">I'm back</button></div><div class="afk-status" id="afkStatus">AFK profile chưa được tải.</div></div>
+          <article class="panel control-card"><div class="panel-title"><div><span>VOICE CORE</span><h3>Stay in channel</h3></div><label class="switch"><input id="autoVoice" type="checkbox"><span></span></label></div><div class="field"><label for="voiceChannel">Voice channel</label><select id="voiceChannel"><option value="">Sign in first</option></select></div><div class="button-row"><button class="btn btn-light" id="saveVoice" type="button">Apply + join</button><button class="btn btn-ghost" id="leaveVoice" type="button">Leave</button></div><p class="tiny-note">Auto reconnect khi gateway hoạt động. Hosting sleep vẫn là giới hạn của plan.</p></article>
 
-          <div class="panel glass command-panel reveal tilt"><div class="panel-title"><div><span>COMMAND LAB</span><h3>Send to Discord</h3></div><span class="kbd">LIVE</span></div><div class="command-line"><span>/</span><input id="commandName" list="commandList" placeholder="announce / afk / clear / vc-join / ..."><datalist id="commandList"></datalist></div><textarea id="commandArgs" rows="5" placeholder='JSON args, ví dụ: {"message":"Hello server"}'></textarea><div class="send-row"><select id="textChannel"></select><button class="button button-light" id="sendCommand">Execute ↗</button></div><div class="response-box" id="commandResponse">READY · waiting for command</div></div>
+          <article class="panel control-card afk-card"><div class="panel-title"><div><span>AFK STUDIO</span><h3>Build your notice</h3></div><span id="afkStatus" class="status-chip">IDLE</span></div><div class="afk-layout"><div class="afk-form"><div class="field"><label for="afkReason">AFK reason</label><input id="afkReason" maxlength="240" placeholder="đi ngủ / đi học / bận..."></div><div class="field"><label for="afkMedia">Image / GIF URL</label><input id="afkMedia" placeholder="https://.../anime.gif" type="url"></div><div class="button-row"><button class="btn btn-light" id="saveAfk" type="button">Set AFK</button><button class="btn btn-ghost" id="clearAfk" type="button">I'm back</button></div></div><div class="afk-preview"><div class="preview-media" id="afkMediaPreview"><span>PREVIEW / AFK MEDIA</span></div><strong>Aki AFK Notice</strong><small id="afkPreviewText">Your reason will appear here.</small></div></div></article>
 
-          <div class="panel glass activity-panel reveal"><div class="panel-title"><div><span>ACTIVITY</span><h3>Recent events</h3></div><button class="icon-button" id="refreshActivity">↻</button></div><div class="activity-list" id="activityList"><div class="activity-empty">No events yet.</div></div></div>
+          <article class="panel control-card"><div class="panel-title"><div><span>COMMAND LAB</span><h3>Send to Discord</h3></div><span class="status-chip">LIVE</span></div><div class="command-form"><div class="command-name"><span>/</span><input id="commandName" value="announce" placeholder="announce / afk / clear / vc-join"></div><select id="textChannel"><option value="">Default text channel</option></select><textarea id="commandArgs" rows="5" placeholder='{"text":"Aki is online"}'></textarea><button class="btn btn-light" id="sendCommand" type="button">Execute ↗</button></div><pre id="responseBox" class="response-box">READY · waiting for command</pre></article>
+
+          <article class="panel control-card activity-card"><div class="panel-title"><div><span>ACTIVITY</span><h3>Recent events</h3></div><button class="icon-btn" id="refreshActivity" type="button" aria-label="Refresh activity">↻</button></div><div id="activityList" class="activity-list"><div class="empty-line">No events yet.</div></div></article>
         </div>
       </div>
     </section>
 
-    <section class="view" data-view="commands">
-      <div class="section-head reveal"><div><span class="eyebrow">03 / COMMANDS</span><h2>26 tools.<br><em>No filler.</em></h2></div><p>Slash commands đăng ký thật qua Discord HTTP API. Prefix alias `!` vẫn có cho các lệnh nhanh; AFK hỗ trợ thêm URL ảnh/GIF hoặc upload attachment.</p></div>
-      <div class="command-library" id="commandLibrary"></div>
-      <div class="command-note glass reveal"><span>AFK EXAMPLE</span><code>/afk reason:đi ngủ image_url:https://example.com/anime.gif</code><code>/afk reason:đi học media:&lt;upload gif&gt;</code><small>Media được lưu theo từng server + user và xuất hiện trong embed khi member bị tag.</small></div>
+    <section class="page" data-page="commands" aria-labelledby="commands-title">
+      <div class="page-head"><div><div class="eyebrow">03 / COMMANDS</div><h2 id="commands-title">26 tools.<br><span>No filler.</span></h2></div><p>Slash commands thật được đăng ký qua Discord HTTP API. Prefix alias `!` có cho những lệnh nhanh và `/afk` hỗ trợ media URL.</p></div>
+      <div id="commandCatalog" class="command-catalog"></div>
     </section>
 
-    <section class="view" data-view="docs">
-      <div class="section-head reveal"><div><span class="eyebrow">04 / DOCUMENTATION</span><h2>Ship it.<br><em>Keep the aura.</em></h2></div><p>Deploy từ GitHub lên Render, cắm credentials qua Environment Variables và giữ OAuth callback khớp với URL thật.</p></div>
-      <div class="docs-grid">
-        <article class="doc-card glass reveal tilt"><span>01</span><h3>Discord Developer Portal</h3><p>Tạo Application → Bot → lấy Token. Bật các intents đúng với bot. OAuth2 Redirect URI:</p><code>/auth/discord/callback</code></article>
-        <article class="doc-card glass reveal tilt"><span>02</span><h3>AFK Media</h3><p>Gõ `/afk`, nhập reason rồi chọn <b>image_url</b> hoặc upload trực tiếp ở <b>media</b>. Khi người khác tag bạn, bot trả embed kèm hình/GIF.</p></article>
-        <article class="doc-card glass reveal tilt"><span>03</span><h3>Render</h3><p>Blueprint tạo Web Service + Postgres cùng region. Web nghe trên <code>0.0.0.0:$PORT</code> và có <code>/health</code>.</p></article>
-        <article class="doc-card glass reveal tilt"><span>04</span><h3>Reality check</h3><p>Free Web Service của Render có thể sleep sau thời gian không có traffic; voice 24/7 cần plan không sleep.</p></article>
-      </div>
-      <div class="install-panel glass reveal"><div><span class="eyebrow">LOCAL</span><h3>Start in 3 commands</h3></div><pre><code>cp .env.example .env
-npm install
-npm start</code></pre></div>
+    <section class="page" data-page="docs" aria-labelledby="docs-title">
+      <div class="page-head"><div><div class="eyebrow">04 / DOCUMENTATION</div><h2 id="docs-title">Ship it.<br><span>Keep the aura.</span></h2></div><p>Deploy từ GitHub lên Render, khai báo secrets trong Environment Variables và giữ OAuth callbacks trùng hoàn toàn với domain.</p></div>
+      <div class="docs-grid"><article class="doc-card"><b>01</b><h3>Discord Developer Portal</h3><p>Tạo Application → Bot. Thêm OAuth redirect:</p><code>/auth/discord/callback</code></article><article class="doc-card"><b>02</b><h3>AFK Media</h3><p>Dùng `/afk` với reason và image/GIF URL. Bot sẽ lưu profile theo server + user.</p></article><article class="doc-card"><b>03</b><h3>Render</h3><p>Web + Postgres cùng region. Server bind `0.0.0.0:$PORT` và có `/health`.</p></article><article class="doc-card"><b>04</b><h3>24/7 Reality Check</h3><p>Render Free có thể sleep. Voice 24/7 cần plan không sleep.</p></article></div>
     </section>
   </main>
 
-  <footer class="footer"><div><b>AKI DEV</b><span>Discord Control System</span></div><div>WEB BY <b>AKI DEV</b> · ANIME CORE · 2026</div></footer>
+  <footer class="footer"><span>AKI DEV DISCORD CONTROL SYSTEM</span><strong>WEB BY AKI DEV · ANIME CORE · 2026</strong></footer>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/script.js"></script>
+  <script src="/script.js" defer></script>
 </body>
 </html>
