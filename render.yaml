@@ -27,6 +27,8 @@ services:
       - key: DISCORD_GUILD_ID
         sync: false
       - key: DATABASE_URL
+      - key: SITE_URL
+  value: https://aki-discord-control-6yfp.onrender.com
         fromDatabase:
           name: aki-discord-db
           property: connectionString
