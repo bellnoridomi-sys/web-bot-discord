@@ -884,14 +884,20 @@ app.get('/api/overview', requireAuth, async (req, res) => {
 const ROOT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
 const PUBLIC_INDEX = path.join(PUBLIC_DIR, 'index.html');
+const PUBLIC_CSS = path.join(PUBLIC_DIR, 'style.css');
+const PUBLIC_JS = path.join(PUBLIC_DIR, 'script.js');
 const ROOT_INDEX = path.join(ROOT_DIR, 'index.html');
-const WEB_DIR = fs.existsSync(PUBLIC_INDEX) && fs.statSync(PUBLIC_INDEX).size > 64 ? PUBLIC_DIR : ROOT_DIR;
+const ROOT_CSS = path.join(ROOT_DIR, 'style.css');
+const ROOT_JS = path.join(ROOT_DIR, 'script.js');
 
-app.use(express.static(WEB_DIR, { extensions: ['html'] }));
-app.get('/{*splat}', (req, res) => {
-  const indexFile = WEB_DIR === PUBLIC_DIR ? PUBLIC_INDEX : ROOT_INDEX;
-  return res.sendFile(indexFile);
-});
+// Prefer /public only when the complete UI bundle exists.
+// This prevents a partially uploaded public/index.html from hiding root assets.
+const publicReady = [PUBLIC_INDEX, PUBLIC_CSS, PUBLIC_JS].every(file => fs.existsSync(file) && fs.statSync(file).size > 64);
+const WEB_DIR = publicReady ? PUBLIC_DIR : ROOT_DIR;
+const INDEX_FILE = publicReady ? PUBLIC_INDEX : ROOT_INDEX;
+
+app.use(express.static(WEB_DIR, { extensions: ['html'], index: false }));
+app.get('/{*splat}', (req, res) => res.sendFile(INDEX_FILE));
 
 setInterval(() => {
   const now = Date.now();
