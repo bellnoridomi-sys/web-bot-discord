@@ -960,23 +960,30 @@ app.get('/api/guilds/:guildId/channels', requireAuth, async (req, res) => {
   const g = bot.guilds.cache.get(req.params.guildId);
   if (!g) return res.status(404).json({ error: 'BOT_NOT_IN_GUILD' });
   const meta = (req.session.guilds || []).find(x => x.id === g.id);
-  if (!meta || !meta.manageable) return res.status(403).json({ error: 'NO_GUILD_PERMISSION' });
+  if (!canManageGuildFromOAuthMeta(meta)) return res.status(403).json({ error: 'NO_GUILD_PERMISSION' });
   await g.channels.fetch();
   res.json({ channels: [...g.channels.cache.values()].filter(c => [ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(c.type)).sort((a,b) => a.position-b.position).map(c => ({ id: c.id, name: c.name, type: c.type })) });
 });
 app.get('/api/guilds/:guildId/config', requireAuth, async (req, res) => {
   const g = bot.guilds.cache.get(req.params.guildId);
   const meta = (req.session.guilds || []).find(x => x.id === req.params.guildId);
-  if (!g || !meta?.manageable) return res.status(403).json({ error: 'NO_GUILD_PERMISSION' });
+  if (!g || !canManageGuildFromOAuthMeta(meta)) return res.status(403).json({ error: 'NO_GUILD_PERMISSION' });
   res.json({ config: await getConfig(g.id), stats: { members: g.memberCount, channels: g.channels.cache.size, roles: g.roles.cache.size, emojis: g.emojis.cache.size, ping: Math.round(bot.ws.ping) } });
 });
+
+function canManageGuildFromOAuthMeta(meta) {
+  if (!meta) return false;
+  if (Boolean(meta.owner)) return true;
+  try { return (BigInt(meta.permissions || '0') & (8n | 32n)) !== 0n; }
+  catch { return false; }
+}
 
 async function requireGuildControl(req, res) {
   const guild = bot.guilds.cache.get(req.params.guildId);
   const meta = (req.session.guilds || []).find(x => x.id === req.params.guildId);
-  if (!guild || !meta) throw Object.assign(new Error('Bot/user does not share this server.'), { status: 404 });
-  if (!meta.manageable) throw Object.assign(new Error('Bạn cần quyền Manage Server hoặc Administrator.'), { status: 403 });
-  return { guild, meta };
+  if (!guild || !meta) throw Object.assign(new Error('Bot chưa có trong server này hoặc tài khoản Discord không có trong server.'), { status: 404 });
+  if (!canManageGuildFromOAuthMeta(meta)) throw Object.assign(new Error('Bạn cần quyền Manage Server hoặc Administrator.'), { status: 403 });
+  return { guild, meta: { ...meta, manageable: true } };
 }
 
 app.put('/api/guilds/:guildId/config', requireAuth, async (req, res) => {
