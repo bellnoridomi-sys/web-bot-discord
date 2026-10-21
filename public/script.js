@@ -74,7 +74,7 @@ async function runServerBuilder(){
   if(!confirm('Build template '+preset+' cho server "'+state.guild.name+'". Kênh/role đã có sẽ được giữ nguyên. Tiếp tục?'))return;
   const d=await fetchJson('/api/guilds/'+state.guild.id+'/server-builder',{method:'POST',body:JSON.stringify({preset,topic})});
   const r=d.result;
-  flash('builderResponse','✅ HOÀN TẤT\nĐã tạo: '+r.categories.filter(x=>x.created).length+' danh mục · '+r.channels.length+' kênh · '+r.roles.filter(x=>x.created).length+' role\nBỏ qua mục đã có: '+r.skipped.length+'\n'+(r.channels.map(c=>(c.type==='voice'?'🔊':'#')+' '+c.name).join('\n')||'Không có kênh mới cần tạo.'));
+  flash('builderResponse','✅ HOÀN TẤT\nĐã tạo: '+r.categories.filter(x=>x.created).length+' danh mục · '+r.channels.length+' kênh mới · '+r.roles.filter(x=>x.created).length+' role mới ('+r.roles.length+' role tổng)\n🎭 Role panel: '+(r.automation?.rolePanel?.ok?'✅ sẵn sàng':'⚠️ chưa đăng')+' · 🎫 Ticket panel: '+(r.automation?.ticketPanel?.ok?'✅ sẵn sàng':'⚠️ chưa đăng')+'\nBỏ qua mục đã có: '+r.skipped.length+(r.warnings?.length?'\n⚠️ '+r.warnings.join('\n⚠️ '):'')+'\n'+(r.channels.map(c=>(c.type==='voice'?'🔊':'#')+' '+c.name).join('\n')||'Không có kênh mới cần tạo.'));
   await loadGuild();await refreshActivity();
  }catch(e){flash('builderResponse','ERROR · '+e.message,true)}
  finally{if(button)button.disabled=false}
