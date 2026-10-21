@@ -334,6 +334,61 @@ async function consumeOAuthState(stateKey) {
   return row;
 }
 
+async function discordOAuthCallback(code) {
+  const clientId = process.env.DISCORD_CLIENT_ID || '';
+  const clientSecret = process.env.DISCORD_CLIENT_SECRET || '';
+  if (!clientId || !clientSecret) throw new Error('DISCORD_OAUTH_CONFIG_MISSING');
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: SITE_URL + '/auth/discord/callback'
+  });
+  const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body
+  });
+  if (!tokenRes.ok) {
+    let payload = {};
+    try { payload = await tokenRes.json(); } catch {}
+    const errorCode = typeof payload.error === 'string' ? payload.error : 'unknown';
+    throw new Error('DISCORD_TOKEN_EXCHANGE_' + tokenRes.status + '_' + errorCode);
+  }
+  return tokenRes.json();
+}
+async function discordApi(apiPath, token) {
+  const response = await fetch('https://discord.com/api/v10' + apiPath, {
+    headers: { Authorization: 'Bearer ' + token }
+  });
+  if (!response.ok) throw new Error('DISCORD_API_' + response.status + '_' + apiPath);
+  return response.json();
+}
+function discordLoginErrorMessage(error) {
+  const message = typeof error === 'string' ? error : String(error?.message || '');
+  if (message === 'DISCORD_OAUTH_CONFIG_MISSING') {
+    return 'Thiếu DISCORD_CLIENT_ID hoặc DISCORD_CLIENT_SECRET trong Environment của Render.';
+  }
+  if (message.startsWith('DISCORD_TOKEN_EXCHANGE_')) {
+    if (message.includes('_invalid_client')) {
+      return 'Discord từ chối OAuth Client ID/Secret. Kiểm tra DISCORD_CLIENT_ID và DISCORD_CLIENT_SECRET có thuộc cùng một ứng dụng trong Discord Developer Portal, rồi redeploy.';
+    }
+    if (message.includes('_invalid_grant')) {
+      return 'Mã đăng nhập không còn hợp lệ hoặc Redirect URI không khớp. Hãy bắt đầu đăng nhập mới và kiểm tra Redirect URI trùng chính xác với URL callback trên Render.';
+    }
+    return 'Discord không chấp nhận mã OAuth. Kiểm tra Client ID/Secret và Redirect URI trong Discord Developer Portal và Render.';
+  }
+  if (message.startsWith('DISCORD_API_401_')) {
+    return 'Discord đã từ chối access token. Hãy thử đăng nhập lại; nếu vẫn lỗi, kiểm tra cấu hình OAuth của ứng dụng.';
+  }
+  if (message.startsWith('DISCORD_API_403_')) {
+    return 'Discord từ chối quyền truy cập hồ sơ. Hãy thử đăng nhập lại và chấp thuận các quyền identify, guilds.';
+  }
+  return 'Lỗi xử lý Discord OAuth. Kiểm tra Logs của Render để xem mã lỗi an toàn (không chia sẻ token hoặc secret).';
+}
+
 app.get('/auth/discord', async (req, res) => {
   if (!process.env.DISCORD_CLIENT_ID) return res.status(503).send('Discord OAuth is not configured. Add DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET.');
   const state = encodeState();
@@ -380,8 +435,9 @@ app.get('/auth/discord/callback', async (req, res) => {
     setSessionCookie(res, sid);
     return res.redirect('/dashboard');
   } catch (error) {
-    console.error('Discord OAuth callback failed:', error);
-    return res.status(500).send('Discord login failed. Check OAuth redirect URL and credentials.');
+    const errorCode = String(error?.message || 'UNKNOWN_DISCORD_OAUTH_ERROR');
+    console.error('Discord OAuth callback failed:', errorCode);
+    return res.status(500).send(discordLoginErrorMessage(errorCode));
   }
 });
 
