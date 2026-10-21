@@ -732,6 +732,9 @@ async function setupRolePanel(guild, channel, actorId) {
   const me = guild.members.me || await guild.members.fetchMe();
   if (!me.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Bot cần quyền Manage Roles.');
   for (const roleSpec of SELF_ASSIGNABLE_ROLES) await ensureNamedRole(guild, roleSpec.name, roleSpec.color);
+  const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
+  const existing = recent?.find(item => item.author.id === bot.user?.id && item.components.some(row => row.components.some(component => component.customId?.startsWith('aki:role:'))));
+  if (existing) return existing;
   const message = await channel.send({
     embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('🎭 Chọn role của bạn').setDescription('Nhấn nút để tự nhận hoặc gỡ role sở thích.\n\n🎮 Gamer · chơi game\n💬 Social · trò chuyện & kết bạn\n🛍️ Trader · giao dịch\n🛒 Buyer · tìm mua\n📦 Seller · đăng bán\n🔔 Event Ping · nhận thông báo sự kiện').setFooter({ text: 'Aki Dev · Role Selection' })],
     components: buildSelfRoleRows(), allowedMentions: { parse: [] }
@@ -767,6 +770,9 @@ async function setupTicketPanel(guild, channel, actorId) {
   const { me } = await ensureTicketCategory(guild);
   const perms = channel.permissionsFor(me);
   if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) throw new Error('Bot cần View Channel, Send Messages và Embed Links ở kênh panel.');
+  const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
+  const existing = recent?.find(item => item.author.id === bot.user?.id && item.components.some(row => row.components.some(component => component.customId === 'aki:ticket:create')));
+  if (existing) return existing;
   const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('aki:ticket:create').setLabel('🎫 Mở ticket hỗ trợ').setStyle(ButtonStyle.Primary));
   const message = await channel.send({
     embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('🎫 Trung tâm hỗ trợ').setDescription('Nhấn **Mở ticket hỗ trợ** để tạo một kênh riêng tư với đội ngũ.\n\nKhông gửi mật khẩu, token hoặc thông tin thanh toán nhạy cảm.').setFooter({ text: 'Aki Dev · Ticket System' })],
@@ -1426,7 +1432,7 @@ app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) =>
       voice: [['🔊・voice-lounge','Phòng voice giao lưu chung.'],['🎮・gaming-party-1','Voice tìm đồng đội 1.'],['🎮・gaming-party-2','Voice tìm đồng đội 2.'],['🎮・gaming-party-3','Voice tìm đồng đội 3.'],['🤝・kết-bạn-voice','Voice làm quen bạn mới.'],['🛍️・trade-talk','Voice trao đổi và hỏi đáp.'],['🌙・chill-room','Phòng thư giãn.'],['🎵・music-lounge','Phòng nghe nhạc.']],
       staff: [['🛡️・staff-chat','Kênh nội bộ đội ngũ.'],['🧾・staff-log','Log hoạt động của bot và dashboard.'],['✅・legit-review','Staff xem xét yêu cầu legit.'],['🛍️・trade-reports','Xử lý báo cáo giao dịch.'],['🎫・ticket-staff','Điều phối hỗ trợ.'],['🔨・mod-actions','Ghi chú xử lý moderation.']]
     };
-    const result = { preset, roles: [], categories: [], channels: [], skipped: [] };
+    const result = { preset, roles: [], categories: [], channels: [], skipped: [], automation: {}, warnings: [] };
     const roleSpecs = [
       { name: '👑 Admin', color: 0xED4245, permissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ModerateMembers, PermissionFlagsBits.ViewAuditLog] },
       { name: '🛡️ Moderator', color: 0x5865F2, permissions: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ModerateMembers, PermissionFlagsBits.ViewAuditLog] },
@@ -1501,7 +1507,23 @@ app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) =>
         result.channels.push({ name: channel.name, type: type === ChannelType.GuildVoice ? 'voice' : 'text', category: category.name });
       }
     }
-    await addActivity(guild.id, req.session.user.id, 'server-builder', JSON.stringify({ preset, roles: result.roles.length, categories: result.categories.length, channels: result.channels.length }));
+    const rolePanelChannel = guild.channels.cache.find(c => c.name === '🎭・nhận-role' && c.type === ChannelType.GuildText);
+    const ticketPanelChannel = guild.channels.cache.find(c => c.name === '🎫・mở-ticket' && c.type === ChannelType.GuildText);
+    try {
+      const message = await setupRolePanel(guild, rolePanelChannel, req.session.user.id);
+      result.automation.rolePanel = { channel: rolePanelChannel?.name || null, messageId: message.id, ok: true };
+    } catch (error) {
+      result.automation.rolePanel = { ok: false }; result.warnings.push('Role panel: ' + error.message);
+      console.warn('Server Builder role panel setup failed:', error.message);
+    }
+    try {
+      const message = await setupTicketPanel(guild, ticketPanelChannel, req.session.user.id);
+      result.automation.ticketPanel = { channel: ticketPanelChannel?.name || null, messageId: message.id, ok: true };
+    } catch (error) {
+      result.automation.ticketPanel = { ok: false }; result.warnings.push('Ticket panel: ' + error.message);
+      console.warn('Server Builder ticket panel setup failed:', error.message);
+    }
+    await addActivity(guild.id, req.session.user.id, 'server-builder', JSON.stringify({ preset, roles: result.roles.length, categories: result.categories.length, channels: result.channels.length, automation: result.automation }));
     res.json({ ok: true, result });
   } catch (error) {
     console.error('Server Builder failed:', error);
