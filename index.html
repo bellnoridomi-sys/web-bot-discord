@@ -148,6 +148,19 @@
       <div id="loginGate" class="login-gate panel"><div class="login-orbit"><span>A</span></div><div><div class="eyebrow">CONTROL ACCESS</div><h3>Sign in to unlock the control room</h3><p>Discord login xác thực server và quyền quản lý. Google login có thể mở dashboard; muốn dùng AFK Studio và server controls thì cần link Discord.</p><div class="login-actions"><a class="btn btn-light" href="/auth/discord">CONTINUE WITH DISCORD</a><a class="btn btn-ghost" href="/auth/google">CONTINUE WITH GOOGLE</a></div></div></div>
       <div id="dashboardPanel" class="dashboard-shell" hidden>
         <div class="dashboard-bar panel"><div class="field-stack"><label for="guildSelect">SERVER</label><select id="guildSelect"></select></div><div class="metrics"><div><small>LATENCY</small><strong id="metricPing">—</strong></div><div><small>MEMBERS</small><strong id="metricMembers">—</strong></div><div><small>CHANNELS</small><strong id="metricChannels">—</strong></div><div><small>COMMANDS</small><strong id="metricCommands">—</strong></div></div></div>
+        
+        <article class="panel builder-card">
+          <div class="panel-title"><div><span>SERVER BUILDER / TEMPLATE ENGINE</span><h3>✨ Dựng server tự động</h3></div><span class="status-chip">PREVIEW FIRST</span></div>
+          <p class="tiny-note">Tạo danh mục, kênh chat/voice và role có quyền cơ bản. Không xoá kênh có sẵn; khu staff được ẩn với @everyone.</p>
+          <div class="builder-form">
+            <div class="field"><label for="builderPreset">CHỦ ĐỀ SERVER</label><select id="builderPreset"><option value="community">🌐 Cộng đồng / bạn bè</option><option value="gaming">🎮 Gaming / tìm đồng đội</option><option value="anime">🌸 Anime / manga</option><option value="market">🛍️ Mua bán / giao dịch</option></select></div>
+            <div class="field"><label for="builderTopic">MÔ TẢ KHU CHÀO MỪNG (tuỳ chọn)</label><input id="builderTopic" maxlength="180" placeholder="VD: Welcome to Aot wing. ✨"></div>
+          </div>
+          <div class="builder-preview"><div class="builder-preview-head"><span>LIVE PREVIEW</span><small id="builderPreviewCount">—</small></div><div id="builderPreviewList" class="builder-preview-list"></div></div>
+          <div class="button-row builder-actions"><button class="btn btn-ghost" id="previewBuilder" type="button">↻ XEM TRƯỚC</button><button class="btn btn-light" id="runBuilder" type="button">✨ BUILD SERVER</button></div>
+          <pre id="builderResponse" class="response-box">READY · chọn chủ đề rồi xem trước</pre>
+        </article>
+
         <div class="control-grid">
           <article class="panel control-card"><div class="panel-title"><div><span>BOT SYSTEM</span><h3>Runtime matrix</h3></div><i id="botDot" class="bot-dot"></i></div><div class="matrix"><div><span>gateway</span><b id="matrixGateway">waiting</b></div><div><span>database</span><b id="matrixDb">waiting</b></div><div><span>oauth</span><b>armed</b></div><div><span>voice</span><b id="matrixVoice">standby</b></div></div><div class="button-row"><button class="btn btn-light" data-quick="ping" type="button">PING BOT</button><button class="btn btn-ghost" data-quick="botinfo" type="button">BOT INFO</button></div></article>
           <article class="panel control-card"><div class="panel-title"><div><span>VOICE CORE</span><h3>Stay in channel</h3></div><label class="switch"><input id="autoVoice" type="checkbox"><span></span></label></div><div class="field"><label for="voiceChannel">Voice channel</label><select id="voiceChannel"><option value="">Sign in first</option></select></div><div class="button-row"><button class="btn btn-light" id="saveVoice" type="button">APPLY + JOIN</button><button class="btn btn-ghost" id="leaveVoice" type="button">LEAVE</button></div><p class="tiny-note">Auto reconnect khi gateway hoạt động. Hosting sleep vẫn là giới hạn của plan.</p></article>
