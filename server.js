@@ -879,6 +879,29 @@ async function runCommand(name, ctx) {
       const afk = await setAfk(guild.id, userId, args.reason, media);
       return afkPayload(user?.user || guild.client.users.cache.get(userId), afk);
     }
+    case 'legit': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageRoles);
+      if (!target) throw new Error('Không tìm thấy thành viên cần xác minh. Dùng +legit @thành_viên.');
+      if (target.id === guild.ownerId) throw new Error('Owner không cần gắn role Legit.');
+      const role = await ensureNamedRole(guild, '✅ Legit', 0x57F287, []);
+      const me = guild.members.me || await guild.members.fetchMe();
+      if (role.position >= me.roles.highest.position) throw new Error('Role ✅ Legit phải nằm dưới role cao nhất của bot trong Server Settings → Roles.');
+      await target.roles.add(role, 'Legit verified by staff ' + userId);
+      await addActivity(guild.id, userId, 'legit:verified', '✅ Đã xác minh ' + (target.user.globalName || target.user.username) + ' bằng role ' + role.name + '.');
+      return reply('✅ Đã xác minh legit cho **' + (target.user.globalName || target.user.username) + '**. Role ✅ Legit đã được gắn.');
+    }
+    case 'ticket-setup': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageChannels);
+      const panelChannel = args.channel ? await guild.channels.fetch(args.channel).catch(() => null) : channel;
+      const message = await setupTicketPanel(guild, panelChannel, userId);
+      return reply('🎫 Đã đăng bảng ticket tại <#' + message.channelId + '>.');
+    }
+    case 'role-panel': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageRoles);
+      const panelChannel = args.channel ? await guild.channels.fetch(args.channel).catch(() => null) : channel;
+      const message = await setupRolePanel(guild, panelChannel, userId);
+      return reply('🎭 Đã đăng bảng tự nhận role tại <#' + message.channelId + '>.');
+    }
     case 'warn': {
       ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
       if (!target) throw new Error('Không tìm thấy target.');
@@ -981,7 +1004,8 @@ async function runCommand(name, ctx) {
 function extractInteractionArgs(interaction) {
   const getUserId = () => interaction.options.getUser('user')?.id;
   const out = {};
-  if (['userinfo', 'avatar', 'warnings'].includes(interaction.commandName)) out.user = getUserId();
+  if (['userinfo', 'avatar', 'warnings', 'legit'].includes(interaction.commandName)) out.user = getUserId();
+  if (['ticket-setup', 'role-panel'].includes(interaction.commandName)) out.channel = interaction.options.getChannel('channel')?.id || undefined;
   if (['warn', 'kick', 'ban', 'timeout'].includes(interaction.commandName)) { out.user = getUserId(); }
   if (interaction.commandName === 'warn' || interaction.commandName === 'kick' || interaction.commandName === 'ban' || interaction.commandName === 'timeout') out.reason = interaction.options.getString('reason');
   if (interaction.commandName === 'timeout') out.minutes = interaction.options.getInteger('minutes');
@@ -1025,11 +1049,21 @@ async function addPollReactions(message, count) {
 }
 
 bot.on('interactionCreate', async interaction => {
+  if (interaction.isButton()) {
+    try { if (await handleAkiButton(interaction)) return; }
+    catch (error) {
+      const message = '⚠️ ' + String(error.message || 'Không thể hoàn thành thao tác.');
+      if (interaction.replied || interaction.deferred) await interaction.followUp({ content: message, ephemeral: true }).catch(() => {});
+      else await interaction.reply({ content: message, ephemeral: true }).catch(() => {});
+      if (interaction.guildId) addActivity(interaction.guildId, interaction.user.id, 'error:button', error.message).catch(() => {});
+    }
+  }
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
   try {
-    const payload = await runCommand(interaction.commandName, { guild: interaction.guild, userId: interaction.user.id, userName: interaction.user.globalName || interaction.user.username, channel: interaction.channel, args: extractInteractionArgs(interaction), source: 'discord' });
+    const args = extractInteractionArgs(interaction);
+    const payload = await runCommand(interaction.commandName, { guild: interaction.guild, userId: interaction.user.id, userName: interaction.user.globalName || interaction.user.username, channel: interaction.channel, args, source: 'discord' });
     await interaction.reply(payload);
-    if (interaction.commandName === 'poll') { const sent = await interaction.fetchReply(); await addPollReactions(sent, [extractInteractionArgs(interaction).option1, extractInteractionArgs(interaction).option2, extractInteractionArgs(interaction).option3, extractInteractionArgs(interaction).option4].filter(Boolean).length); }
+    if (interaction.commandName === 'poll') { const sent = await interaction.fetchReply(); await addPollReactions(sent, [args.option1,args.option2,args.option3,args.option4].filter(Boolean).length); }
     await addActivity(interaction.guildId, interaction.user.id, `/${interaction.commandName}`, `✅ Slash command bởi ${interaction.user.globalName || interaction.user.username} tại #${interaction.channel?.name || 'unknown-channel'}.`);
   } catch (error) {
     const msg = `⚠️ ${error.message}`;
@@ -1040,6 +1074,20 @@ bot.on('interactionCreate', async interaction => {
 
 bot.on('messageCreate', async message => {
   if (!message.guild || message.author.bot) return;
+  if (/^\+legit(?:\s|$)/i.test(message.content.trim())) {
+    try {
+      const mentionedId = message.content.match(/<@!?(\d{17,20})>|\b(\d{17,20})\b/);
+      const targetMember = message.mentions.members.first() || (mentionedId ? await message.guild.members.fetch(mentionedId[1] || mentionedId[2]).catch(() => null) : null);
+      if (!targetMember) { await message.reply('Dùng `+legit @thành_viên` để xác minh.').catch(() => {}); return; }
+      const payload = await runCommand('legit', { guild: message.guild, userId: message.author.id, userName: message.member?.displayName, channel: message.channel, args: { user: targetMember.id }, source: 'prefix' });
+      await message.reply(payload);
+      await addActivity(message.guild.id, message.author.id, '+legit', '✅ Đã xác minh ' + (targetMember.user.globalName || targetMember.user.username) + ' từ #'+message.channel.name+'.');
+    } catch (error) {
+      await message.reply('⚠️ ' + error.message).catch(() => {});
+      addActivity(message.guild.id, message.author.id, 'error:+legit', '❌ +legit thất bại: ' + error.message).catch(() => {});
+    }
+    return;
+  }
   try {
     const afkAuthor = await getAfk(message.guild.id, message.author.id);
     if (afkAuthor) await clearAfk(message.guild.id, message.author.id).then(() => message.reply(`👋 Welcome back, **${message.author.globalName || message.author.username}**.`).catch(() => {}));
@@ -1077,8 +1125,21 @@ bot.on('messageCreate', async message => {
 });
 
 // Auto voice state recovery when Discord moves/disconnects the bot.
-bot.on('guildMemberAdd', member => {
-  addActivity(member.guild.id, member.id, 'member:join', `👋 ${member.user.globalName || member.user.username} đã tham gia server.`).catch(() => {});
+bot.on('guildMemberAdd', async member => {
+  let autoRoleName = null;
+  try {
+    const cfg = await getConfig(member.guild.id);
+    let role = cfg.auto_role_id ? await member.guild.roles.fetch(cfg.auto_role_id).catch(() => null) : null;
+    if (!role && !cfg.auto_role_id) role = member.guild.roles.cache.find(r => r.name === '👥 Member') || null;
+    if (role) {
+      const me = member.guild.members.me || await member.guild.members.fetchMe();
+      if (role.position < me.roles.highest.position) {
+        await member.roles.add(role, 'Aki automatic join role');
+        autoRoleName = role.name;
+      }
+    }
+  } catch (error) { console.warn('Auto-role assignment failed:', error.message); }
+  await addActivity(member.guild.id, member.id, 'member:join', `👋 ${member.user.globalName || member.user.username} đã tham gia server.` + (autoRoleName ? ` · auto-role: ${autoRoleName}` : '')).catch(() => {});
 });
 bot.on('guildMemberRemove', member => {
   addActivity(member.guild.id, member.id, 'member:leave', `👋 ${member.user.globalName || member.user.username} đã rời server.`).catch(() => {});
