@@ -896,6 +896,15 @@ async function runCommand(name, ctx) {
       const me = guild.members.me || await guild.members.fetchMe();
       if (role.position >= me.roles.highest.position) throw new Error('Role ✅ Legit phải nằm dưới role cao nhất của bot trong Server Settings → Roles.');
       await target.roles.add(role, 'Legit verified by staff ' + userId);
+      const vouchChannel = guild.channels.cache.find(c => c.name === '✅・legit-vouches' && c.isTextBased());
+      if (vouchChannel) {
+        try {
+          const botMember = guild.members.me || await guild.members.fetchMe();
+          if (vouchChannel.permissionsFor(botMember)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+            await vouchChannel.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setTitle('✅ Legit verified').setDescription('**' + (target.user.globalName || target.user.username) + '** đã được staff xác minh.').addFields({ name: 'Thành viên', value: '<@' + target.id + '>', inline: true }, { name: 'Staff xác minh', value: '<@' + userId + '>', inline: true }).setTimestamp()], allowedMentions: { parse: [] } });
+          }
+        } catch (error) { console.warn('Legit vouch message failed:', error.message); }
+      }
       await addActivity(guild.id, userId, 'legit:verified', '✅ Đã xác minh ' + (target.user.globalName || target.user.username) + ' bằng role ' + role.name + '.');
       return reply('✅ Đã xác minh legit cho **' + (target.user.globalName || target.user.username) + '**. Role ✅ Legit đã được gắn.');
     }
