@@ -707,6 +707,126 @@ function attachVoiceRecovery(guild, connection) {
   connection.on(VoiceConnectionStatus.Destroyed, () => io.emit('bot-status', { type: 'voice', guildId: guild.id, connected: false }));
 }
 
+const SELF_ASSIGNABLE_ROLES = [
+  { key: 'gamer', name: '🎮 Gamer', color: 0x5865F2 },
+  { key: 'social', name: '💬 Social', color: 0x57F287 },
+  { key: 'trader', name: '🛍️ Trader', color: 0xFEE75C },
+  { key: 'buyer', name: '🛒 Buyer', color: 0xEB459E },
+  { key: 'seller', name: '📦 Seller', color: 0xED4245 },
+  { key: 'events', name: '🔔 Event Ping', color: 0x99AAB5 }
+];
+
+async function ensureNamedRole(guild, name, color = 0x99AAB5, permissions = []) {
+  let role = guild.roles.cache.find(r => r.name === name);
+  if (!role) role = await guild.roles.create({ name, color, permissions, reason: 'Aki automation setup' });
+  return role;
+}
+
+function buildSelfRoleRows() {
+  const buttons = SELF_ASSIGNABLE_ROLES.map(role => new ButtonBuilder().setCustomId('aki:role:' + role.key).setLabel(role.name).setStyle(ButtonStyle.Secondary));
+  return [new ActionRowBuilder().addComponents(...buttons.slice(0, 5)), new ActionRowBuilder().addComponents(...buttons.slice(5))].filter(row => row.components.length);
+}
+
+async function setupRolePanel(guild, channel, actorId) {
+  if (!channel?.isTextBased?.() || channel.guild?.id !== guild.id) throw new Error('Chọn một kênh text thuộc đúng server.');
+  const me = guild.members.me || await guild.members.fetchMe();
+  if (!me.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Bot cần quyền Manage Roles.');
+  for (const roleSpec of SELF_ASSIGNABLE_ROLES) await ensureNamedRole(guild, roleSpec.name, roleSpec.color);
+  const message = await channel.send({
+    embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('🎭 Chọn role của bạn').setDescription('Nhấn nút để tự nhận hoặc gỡ role sở thích.\n\n🎮 Gamer · chơi game\n💬 Social · trò chuyện & kết bạn\n🛍️ Trader · giao dịch\n🛒 Buyer · tìm mua\n📦 Seller · đăng bán\n🔔 Event Ping · nhận thông báo sự kiện').setFooter({ text: 'Aki Dev · Role Selection' })],
+    components: buildSelfRoleRows(), allowedMentions: { parse: [] }
+  });
+  await addActivity(guild.id, actorId, 'roles:panel', 'Đã đăng bảng tự nhận role tại #' + channel.name + '.');
+  return message;
+}
+
+async function ensureTicketCategory(guild) {
+  const me = guild.members.me || await guild.members.fetchMe();
+  if (!me.permissions.has(PermissionFlagsBits.ManageChannels)) throw new Error('Bot cần quyền Manage Channels để tạo ticket.');
+  const staffNames = ['👑 Admin', '🛡️ Moderator', '🧾 Trade Moderator', '🆘 Support'];
+  const staffRoles = [];
+  for (const name of staffNames) {
+    const role = guild.roles.cache.find(r => r.name === name);
+    if (role) staffRoles.push(role);
+  }
+  let category = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === '🎫・TICKETS');
+  if (!category) {
+    const overwrites = [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] }];
+    for (const role of staffRoles) overwrites.push({ id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] });
+    overwrites.push({ id: me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels] });
+    category = await guild.channels.create({ name: '🎫・TICKETS', type: ChannelType.GuildCategory, permissionOverwrites: overwrites, reason: 'Aki ticket system setup' });
+  }
+  return { category, staffRoles, me };
+}
+
+async function setupTicketPanel(guild, channel, actorId) {
+  if (!channel?.isTextBased?.() || channel.guild?.id !== guild.id) throw new Error('Chọn một kênh text thuộc đúng server.');
+  const { me } = await ensureTicketCategory(guild);
+  const perms = channel.permissionsFor(me);
+  if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) throw new Error('Bot cần View Channel, Send Messages và Embed Links ở kênh panel.');
+  const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('aki:ticket:create').setLabel('🎫 Mở ticket hỗ trợ').setStyle(ButtonStyle.Primary));
+  const message = await channel.send({
+    embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('🎫 Trung tâm hỗ trợ').setDescription('Nhấn **Mở ticket hỗ trợ** để tạo một kênh riêng tư với đội ngũ.\n\nKhông gửi mật khẩu, token hoặc thông tin thanh toán nhạy cảm.').setFooter({ text: 'Aki Dev · Ticket System' })],
+    components: [row], allowedMentions: { parse: [] }
+  });
+  await addActivity(guild.id, actorId, 'ticket:panel', 'Đã đăng panel ticket tại #' + channel.name + '.');
+  return message;
+}
+
+async function handleAkiButton(interaction) {
+  const customId = interaction.customId || '';
+  if (!customId.startsWith('aki:') || !interaction.guild) return false;
+  const guild = interaction.guild;
+  if (customId.startsWith('aki:role:')) {
+    const key = customId.slice('aki:role:'.length);
+    const spec = SELF_ASSIGNABLE_ROLES.find(r => r.key === key);
+    if (!spec) { await interaction.reply({ content: 'Role không hợp lệ.', ephemeral: true }); return true; }
+    const member = await guild.members.fetch(interaction.user.id);
+    const role = guild.roles.cache.find(r => r.name === spec.name);
+    if (!role) { await interaction.reply({ content: 'Role chưa được tạo. Nhờ quản trị viên chạy /role-panel hoặc setup server.', ephemeral: true }); return true; }
+    if (role.position >= (guild.members.me || await guild.members.fetchMe()).roles.highest.position) { await interaction.reply({ content: 'Bot chưa thể quản lý role này vì role đang ở trên hoặc ngang role cao nhất của bot.', ephemeral: true }); return true; }
+    const hadRole = member.roles.cache.has(role.id);
+    if (hadRole) await member.roles.remove(role, 'Self-role panel'); else await member.roles.add(role, 'Self-role panel');
+    await interaction.reply({ content: (hadRole ? '➖ Đã gỡ role ' : '✅ Đã nhận role ') + role.name, ephemeral: true });
+    await addActivity(guild.id, interaction.user.id, hadRole ? 'role:self-remove' : 'role:self-add', role.name + ' · từ role panel').catch(() => {});
+    return true;
+  }
+  if (customId === 'aki:ticket:create') {
+    const member = await guild.members.fetch(interaction.user.id);
+    await guild.channels.fetch();
+    const existing = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.topic === 'aki-ticket-owner=' + member.id);
+    if (existing) { await interaction.reply({ content: 'Bạn đã có ticket đang mở: ' + existing.toString(), ephemeral: true }); return true; }
+    const { category, staffRoles, me } = await ensureTicketCategory(guild);
+    const slug = String(member.user.username || 'member').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'member';
+    const overwrites = [
+      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: member.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] },
+      { id: me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageMessages] }
+    ];
+    for (const role of staffRoles) overwrites.push({ id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] });
+    const ticket = await guild.channels.create({ name: 'ticket-' + slug, type: ChannelType.GuildText, parent: category.id, topic: 'aki-ticket-owner=' + member.id, permissionOverwrites: overwrites, reason: 'Ticket opened by ' + member.id });
+    const closeRow = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('aki:ticket:close').setLabel('🔒 Đóng ticket').setStyle(ButtonStyle.Danger));
+    await ticket.send({ content: member.toString() + ' · đội ngũ hỗ trợ sẽ phản hồi tại đây.', embeds: [new EmbedBuilder().setColor(0x57F287).setTitle('🎫 Ticket đã mở').setDescription('Mô tả yêu cầu của bạn và chờ staff. Chỉ bạn, bot và đội ngũ được cấp quyền mới xem được kênh này.')], components: [closeRow], allowedMentions: { users: [member.id] } });
+    await interaction.reply({ content: '✅ Ticket của bạn đã được tạo: ' + ticket.toString(), ephemeral: true });
+    await addActivity(guild.id, member.id, 'ticket:created', 'Đã mở #' + ticket.name + '.').catch(() => {});
+    return true;
+  }
+  if (customId === 'aki:ticket:close') {
+    const channel = interaction.channel;
+    const ownerMatch = String(channel?.topic || '').match(/aki-ticket-owner=(\d{17,20})/);
+    if (!channel || channel.type !== ChannelType.GuildText || !ownerMatch) { await interaction.reply({ content: 'Đây không phải ticket Aki hợp lệ.', ephemeral: true }); return true; }
+    const member = await guild.members.fetch(interaction.user.id);
+    const canClose = member.id === ownerMatch[1] || member.permissions.has(PermissionFlagsBits.ManageChannels) || member.permissions.has(PermissionFlagsBits.ManageGuild);
+    if (!canClose) { await interaction.reply({ content: 'Chỉ người mở ticket hoặc staff có quyền quản lý kênh mới được đóng ticket.', ephemeral: true }); return true; }
+    await interaction.reply({ content: '🔒 Đang đóng ticket…', ephemeral: true });
+    await channel.permissionOverwrites.edit(ownerMatch[1], { ViewChannel: false, SendMessages: false }).catch(() => {});
+    if (!channel.name.startsWith('closed-')) await channel.setName(('closed-' + channel.name).slice(0, 100)).catch(() => {});
+    await addActivity(guild.id, interaction.user.id, 'ticket:closed', 'Đã đóng #' + channel.name + '.').catch(() => {});
+    return true;
+  }
+  return false;
+}
+
 async function runCommand(name, ctx) {
   const { guild, userId, channel, args = {}, source = 'discord' } = ctx;
   const user = await fetchGuildMember(guild, userId);
