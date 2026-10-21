@@ -294,7 +294,9 @@ function getCookieValue(req, name) {
 function setOAuthStateCookie(res, state) {
   const name = oauthStateCookieName(state);
   if (!name) throw new Error('Invalid OAuth state format.');
-  appendSetCookie(res, name + '=' + state + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=600' + (isProd ? '; Secure' : ''));
+  // OAuth returns from a different site. None+Secure makes the cookie available
+  // on the cross-site redirect in production browsers.
+  appendSetCookie(res, name + '=' + state + '; Path=/; HttpOnly; SameSite=' + (isProd ? 'None; Secure' : 'Lax') + '; Max-Age=600');
 }
 function hasOAuthStateCookie(req, state) {
   const name = oauthStateCookieName(state);
@@ -413,10 +415,14 @@ app.get('/auth/discord/callback', async (req, res) => {
   try {
     const cookieMatches = hasOAuthStateCookie(req, stateKey);
     clearOAuthStateCookie(res, stateKey);
-    if (!cookieMatches) return res.status(400).send('Invalid or expired OAuth state. Hãy quay lại trang chủ và đăng nhập Discord lại.');
+    if (!cookieMatches) {
+      console.warn('Discord OAuth state cookie missing or mismatched; verify callback hostname and browser cookie settings.');
+      return res.status(400).send('Phiên OAuth không khớp cookie của trình duyệt. Hãy mở dashboard ở đúng địa chỉ https://aki-discord-control-6yfp.onrender.com, đóng tab đăng nhập Discord cũ rồi thử lại.');
+    }
     const state = await consumeOAuthState(stateKey);
     if (!state || state.provider !== 'discord' || Date.now() - state.createdAt > 10 * 60_000) {
-      return res.status(400).send('Invalid or expired OAuth state. Hãy quay lại trang chủ và đăng nhập Discord lại.');
+      console.warn('Discord OAuth state missing, wrong provider, or expired in state store.');
+      return res.status(400).send('Phiên đăng nhập đã hết hạn hoặc Render không tìm thấy state. Hãy thử lại từ trang chủ; nếu tiếp tục, kiểm tra DATABASE_URL trên Render.');
     }
     if (req.query.error) return res.status(400).send('Bạn đã huỷ đăng nhập Discord. Hãy quay lại trang chủ để thử lại.');
     if (typeof req.query.code !== 'string' || !req.query.code) return res.status(400).send('Discord không trả về mã đăng nhập. Hãy thử đăng nhập lại.');
@@ -466,10 +472,14 @@ app.get('/auth/google/callback', async (req, res) => {
   try {
     const cookieMatches = hasOAuthStateCookie(req, stateKey);
     clearOAuthStateCookie(res, stateKey);
-    if (!cookieMatches) return res.status(400).send('Invalid or expired OAuth state. Hãy quay lại trang chủ và đăng nhập Google lại.');
+    if (!cookieMatches) {
+      console.warn('Google OAuth state cookie missing or mismatched; verify callback hostname and browser cookie settings.');
+      return res.status(400).send('Phiên OAuth không khớp cookie trình duyệt. Hãy mở dashboard ở đúng địa chỉ rồi thử đăng nhập Google lại.');
+    }
     const state = await consumeOAuthState(stateKey);
     if (!state || state.provider !== 'google' || Date.now() - state.createdAt > 10 * 60_000) {
-      return res.status(400).send('Invalid or expired OAuth state. Hãy quay lại trang chủ và đăng nhập Google lại.');
+      console.warn('Google OAuth state missing, wrong provider, or expired in state store.');
+      return res.status(400).send('Phiên đăng nhập đã hết hạn hoặc state không được lưu. Hãy thử lại và kiểm tra DATABASE_URL trên Render.');
     }
     if (req.query.error) return res.status(400).send('Bạn đã huỷ đăng nhập Google. Hãy quay lại trang chủ để thử lại.');
     if (typeof req.query.code !== 'string' || !req.query.code) return res.status(400).send('Google không trả về mã đăng nhập. Hãy thử đăng nhập lại.');
