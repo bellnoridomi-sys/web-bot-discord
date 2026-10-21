@@ -1525,9 +1525,12 @@ app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) =>
       result.automation.rolePanel = { ok: false }; result.warnings.push('Role panel: ' + error.message);
       console.warn('Server Builder role panel setup failed:', error.message);
     }
+    const hadTicketCategory = guild.channels.cache.some(c => c.type === ChannelType.GuildCategory && c.name === '🎫・TICKETS');
     try {
       const message = await setupTicketPanel(guild, ticketPanelChannel, req.session.user.id);
       result.automation.ticketPanel = { channel: ticketPanelChannel?.name || null, messageId: message.id, ok: true };
+      const ticketCategory = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === '🎫・TICKETS');
+      if (ticketCategory && !result.categories.some(item => item.name === ticketCategory.name)) result.categories.push({ name: ticketCategory.name, created: !hadTicketCategory });
     } catch (error) {
       result.automation.ticketPanel = { ok: false }; result.warnings.push('Ticket panel: ' + error.message);
       console.warn('Server Builder ticket panel setup failed:', error.message);
