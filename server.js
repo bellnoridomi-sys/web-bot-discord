@@ -872,6 +872,82 @@ app.post('/api/guilds/:guildId/voice/leave', requireAuth, async (req, res) => {
   } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
 });
 
+
+app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) => {
+  try {
+    const { guild } = await requireGuildControl(req, res);
+    const me = guild.members.me || await guild.members.fetchMe();
+    if (!me.permissions.has(PermissionFlagsBits.ManageChannels) || !me.permissions.has(PermissionFlagsBits.ManageRoles)) {
+      return res.status(403).json({ error: 'Bot cần quyền Manage Channels và Manage Roles. Hãy cấp quyền lại cho bot rồi thử lại.' });
+    }
+    const preset = ['community', 'gaming', 'anime', 'market'].includes(req.body?.preset) ? req.body.preset : 'community';
+    const topic = String(req.body?.topic || '').trim().slice(0, 180);
+    const prefix = { community: '🌐', gaming: '🎮', anime: '🌸', market: '🛍️' }[preset];
+    const templates = {
+      community: { start: [['📜・nội-quy','Đọc nội quy và hướng dẫn.'],['👋・chào-mừng',topic || 'Chào mừng đến với cộng đồng!'],['🎭・nhận-role','Chọn role phù hợp.']], chat: [['💬・chat-chung','Trò chuyện cùng mọi người.'],['😂・meme','Chia sẻ meme vui vẻ.'],['📸・chia-sẻ','Ảnh, video và khoảnh khắc.'],['🤝・tìm-bạn','Kết bạn và tìm người chơi cùng.']], fun: [['🎲・bot-commands','Dùng lệnh bot tại đây.'],['🎵・chia-sẻ-nhạc','Chia sẻ bài hát yêu thích.']], voice: [['🔊・phòng-chung',''],['🎮・chơi-cùng-nhau',''],['🌙・chill-room','']], staff: [['🛡️・staff-chat','Kênh nội bộ của đội ngũ.'],['🧾・staff-log','Ghi chú và xử lý sự việc.']] },
+      gaming: { start: [['📜・nội-quy','Đọc nội quy trước khi tham gia.'],['👋・chào-mừng',topic || 'Chào mừng game thủ!'],['🎭・nhận-role','Chọn game và role.']], chat: [['🎮・tìm-đồng-đội','Tìm party và teammate.'],['💬・chat-chung','Trò chuyện game thủ.'],['🏆・khoe-thành-tích','Chia sẻ rank và thành tích.'],['😂・meme-game','Meme game vui vẻ.']], fun: [['🤖・bot-commands','Dùng lệnh bot tại đây.'],['📣・thông-báo-game','Tin tức và sự kiện game.']], voice: [['🎧・party-1',''],['🎧・party-2',''],['🏆・ranked-team',''],['🌙・chill-room','']], staff: [['🛡️・staff-chat','Kênh nội bộ của đội ngũ.'],['🧾・staff-log','Ghi chú và xử lý sự việc.']] },
+      anime: { start: [['📜・nội-quy','Đọc nội quy của hội.'],['🌸・chào-mừng',topic || 'Chào mừng đến với thế giới anime!'],['🎭・nhận-role','Chọn role và sở thích.']], chat: [['🍡・trò-chuyện','Tán gẫu cùng hội.'],['🎨・fan-art','Chia sẻ fan art.'],['🎬・anime-manga','Bàn luận anime và manga.'],['😂・meme-anime','Meme anime.']], fun: [['🤖・bot-commands','Dùng lệnh bot tại đây.'],['🎵・anime-music','Chia sẻ nhạc anime.']], voice: [['🎧・phòng-tám',''],['🌸・chill-room',''],['🎬・xem-cùng-nhau','']], staff: [['🛡️・staff-chat','Kênh nội bộ của đội ngũ.'],['🧾・staff-log','Ghi chú và xử lý sự việc.']] },
+      market: { start: [['📜・nội-quy','Đọc quy định giao dịch.'],['👋・chào-mừng',topic || 'Chào mừng đến với khu giao dịch!'],['🎭・nhận-role','Chọn role cần thiết.']], chat: [['🛍️・chợ-chung','Trao đổi và giới thiệu sản phẩm.'],['📦・mua-bán','Đăng tin mua bán theo quy định.'],['🤝・tìm-đối-tác','Tìm đối tác và cộng tác.'],['⭐・đánh-giá','Chia sẻ đánh giá giao dịch.']], fun: [['🤖・bot-commands','Dùng lệnh bot tại đây.'],['📣・thông-báo','Thông báo từ đội ngũ.']], voice: [['🔊・phòng-chung',''],['🤝・tư-vấn','']], staff: [['🛡️・staff-chat','Kênh nội bộ của đội ngũ.'],['🧾・staff-log','Ghi chú và xử lý sự việc.']] }
+    }[preset];
+    const result = { preset, roles: [], categories: [], channels: [], skipped: [] };
+    const roleSpecs = [
+      { name: '🛡️ Moderator', color: 0x5865F2, permissions: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ModerateMembers, PermissionFlagsBits.ViewAuditLog] },
+      { name: '🆘 Support', color: 0x57F287, permissions: [PermissionFlagsBits.ManageMessages] },
+      { name: '💎 VIP', color: 0xEB459E, permissions: [] },
+      { name: '👥 Member', color: 0x99AAB5, permissions: [] }
+    ];
+    const roleMap = {};
+    for (const spec of roleSpecs) {
+      let role = guild.roles.cache.find(r => r.name === spec.name);
+      const existed = Boolean(role);
+      if (!role) role = await guild.roles.create({ name: spec.name, color: spec.color, permissions: spec.permissions, reason: 'Aki Server Builder template' });
+      else result.skipped.push('role:' + spec.name);
+      roleMap[spec.name] = role;
+      result.roles.push({ name: role.name, created: !existed });
+    }
+    const everyone = guild.roles.everyone;
+    const groups = [
+      { key: 'start', name: '📌・BẮT ĐẦU', items: templates.start },
+      { key: 'chat', name: prefix + '・CỘNG ĐỒNG', items: templates.chat },
+      { key: 'fun', name: prefix + '・BOT & TIỆN ÍCH', items: templates.fun },
+      { key: 'voice', name: '🔊・PHÒNG VOICE', items: templates.voice },
+      { key: 'staff', name: '🛡️・ĐỘI NGŨ', items: templates.staff, private: true }
+    ];
+    for (const group of groups) {
+      let category = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name === group.name);
+      const existedCategory = Boolean(category);
+      if (!category) category = await guild.channels.create({
+        name: group.name, type: ChannelType.GuildCategory,
+        permissionOverwrites: group.private ? [
+          { id: everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: roleMap['🛡️ Moderator'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+          { id: roleMap['🆘 Support'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+        ] : undefined,
+        reason: 'Aki Server Builder template'
+      });
+      if (existedCategory) result.skipped.push('category:' + group.name);
+      result.categories.push({ name: category.name, created: !existedCategory });
+      for (const item of group.items) {
+        const name = item[0], channelTopic = item[1];
+        const type = group.key === 'voice' ? ChannelType.GuildVoice : ChannelType.GuildText;
+        const existing = guild.channels.cache.find(c => c.name === name && c.type === type);
+        if (existing) { result.skipped.push('channel:' + name); continue; }
+        const channel = await guild.channels.create({
+          name, type, parent: category.id,
+          topic: type === ChannelType.GuildText ? String(channelTopic || '').slice(0, 1024) || undefined : undefined,
+          reason: 'Aki Server Builder template'
+        });
+        result.channels.push({ name: channel.name, type: type === ChannelType.GuildVoice ? 'voice' : 'text', category: category.name });
+      }
+    }
+    await addActivity(guild.id, req.session.user.id, 'server-builder', JSON.stringify({ preset, roles: result.roles.length, categories: result.categories.length, channels: result.channels.length }));
+    res.json({ ok: true, result });
+  } catch (error) {
+    console.error('Server Builder failed:', error);
+    res.status(error.status || 500).json({ error: error.message || 'SERVER_BUILDER_FAILED' });
+  }
+});
+
 app.get('/api/overview', requireAuth, async (req, res) => {
   res.json({
     name: APP_NAME,
