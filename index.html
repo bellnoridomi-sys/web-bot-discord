@@ -150,6 +150,11 @@
         <div class="dashboard-bar panel"><div class="field-stack"><label for="guildSelect">SERVER</label><select id="guildSelect"></select><button class="btn btn-ghost btn-small" id="refreshGuilds" type="button">↻ LÀM MỚI SERVER</button></div><div class="metrics"><div><small>LATENCY</small><strong id="metricPing">—</strong></div><div><small>MEMBERS</small><strong id="metricMembers">—</strong></div><div><small>CHANNELS</small><strong id="metricChannels">—</strong></div><div><small>COMMANDS</small><strong id="metricCommands">—</strong></div></div></div>
         
         <p id="guildHint" class="tiny-note guild-hint" aria-live="polite" hidden></p>
+        <article class="panel bot-invite-panel" id="botInvitePanel" hidden>
+          <div class="panel-title"><div><span>SERVER SETUP / BOT ACCESS</span><h3 id="botInviteTitle">🤖 Bot chưa có trong server này</h3></div><span class="status-chip">CẦN THÊM BOT</span></div>
+          <p id="botInviteDescription" class="tiny-note">Server này thuộc danh sách bạn có quyền quản lý, nhưng bot chưa tham gia nên chưa thể tạo kênh hoặc role.</p>
+          <div class="button-row"><a id="botInviteLink" class="btn btn-light" href="#" target="_blank" rel="noopener noreferrer">➕ MỜI BOT VÀO SERVER ↗</a></div>
+        </article>
         <article class="panel builder-card">
           <div class="panel-title"><div><span>SERVER BUILDER / TEMPLATE ENGINE</span><h3>✨ Dựng server tự động</h3></div><span class="status-chip">PREVIEW FIRST</span></div>
           <p class="tiny-note">Tạo danh mục, kênh chat/voice và role có quyền cơ bản. Không xoá kênh có sẵn; khu staff được ẩn với @everyone.</p>
