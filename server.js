@@ -1219,7 +1219,7 @@ app.get('/api/guilds/:guildId/config', requireAuth, async (req, res) => {
   const g = bot.guilds.cache.get(req.params.guildId);
   const meta = (req.session.guilds || []).find(x => x.id === req.params.guildId);
   if (!g || !canManageGuildFromOAuthMeta(meta)) return res.status(403).json({ error: 'NO_GUILD_PERMISSION' });
-  res.json({ config: await getConfig(g.id), stats: { members: g.memberCount, channels: g.channels.cache.size, roles: g.roles.cache.size, emojis: g.emojis.cache.size, ping: Math.round(bot.ws.ping) } });
+  res.json({ config: await getConfig(g.id), roles: [...g.roles.cache.values()].filter(r => !r.managed && r.id !== g.id).sort((a,b) => b.position-a.position).map(r => ({ id: r.id, name: r.name, position: r.position })), stats: { members: g.memberCount, channels: g.channels.cache.size, roles: g.roles.cache.size, emojis: g.emojis.cache.size, ping: Math.round(bot.ws.ping) } });
 });
 
 function canManageGuildFromOAuthMeta(meta) {
@@ -1252,6 +1252,12 @@ app.put('/api/guilds/:guildId/config', requireAuth, async (req, res) => {
       const ch = await guild.channels.fetch(nextAutoVoiceChannelId).catch(() => null);
       if (!ch || ![ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(ch.type)) return res.status(400).json({ error: 'VOICE_CHANNEL_INVALID' });
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'auto_role_id') && body.auto_role_id) {
+      const autoRole = await guild.roles.fetch(String(body.auto_role_id)).catch(() => null);
+      if (!autoRole || autoRole.managed || autoRole.id === guild.id) return res.status(400).json({ error: 'AUTO_ROLE_INVALID' });
+      const topRole = (guild.members.me || await guild.members.fetchMe()).roles.highest;
+      if (autoRole.position >= topRole.position) return res.status(400).json({ error: 'AUTO_ROLE_ABOVE_BOT' });
+    }
     if (body.log_channel_id) {
       const logChannel = await guild.channels.fetch(String(body.log_channel_id)).catch(() => null);
       if (!logChannel || !logChannel.isTextBased?.() || logChannel.guild?.id !== guild.id) return res.status(400).json({ error: 'LOG_CHANNEL_INVALID' });
@@ -1262,7 +1268,8 @@ app.put('/api/guilds/:guildId/config', requireAuth, async (req, res) => {
       auto_voice_enabled: nextAutoVoiceEnabled,
       auto_voice_channel_id: nextAutoVoiceChannelId,
       prefix: Object.prototype.hasOwnProperty.call(body, 'prefix') ? String(body.prefix || '!').slice(0, 3) : currentConfig.prefix || '!',
-      log_channel_id: Object.prototype.hasOwnProperty.call(body, 'log_channel_id') ? (body.log_channel_id || null) : currentConfig.log_channel_id || null
+      log_channel_id: Object.prototype.hasOwnProperty.call(body, 'log_channel_id') ? (body.log_channel_id || null) : currentConfig.log_channel_id || null,
+      auto_role_id: Object.prototype.hasOwnProperty.call(body, 'auto_role_id') ? (body.auto_role_id || null) : currentConfig.auto_role_id || null
     };
     const config = await setConfig(guild.id, configPatch);
     if (voiceSettingsProvided) {
@@ -1352,6 +1359,48 @@ app.post('/api/guilds/:guildId/voice/leave', requireAuth, async (req, res) => {
   } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
 });
 
+
+app.post('/api/guilds/:guildId/roles-panel', requireAuth, async (req, res) => {
+  try {
+    const { guild } = await requireGuildControl(req, res);
+    const member = await fetchGuildMember(guild, req.session.user.discordId || req.session.user.id);
+    ensureMemberPermission(member, PermissionFlagsBits.ManageRoles);
+    const channel = await guild.channels.fetch(String(req.body?.channelId || '')).catch(() => null);
+    if (!channel) return res.status(400).json({ error: 'ROLE_PANEL_CHANNEL_INVALID' });
+    const sent = await setupRolePanel(guild, channel, req.session.user.id);
+    res.json({ ok: true, channelId: sent.channelId, messageId: sent.id });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message || 'ROLE_PANEL_FAILED' }); }
+});
+
+app.post('/api/guilds/:guildId/tickets/setup', requireAuth, async (req, res) => {
+  try {
+    const { guild } = await requireGuildControl(req, res);
+    const member = await fetchGuildMember(guild, req.session.user.discordId || req.session.user.id);
+    ensureMemberPermission(member, PermissionFlagsBits.ManageChannels);
+    const channel = await guild.channels.fetch(String(req.body?.channelId || '')).catch(() => null);
+    if (!channel) return res.status(400).json({ error: 'TICKET_PANEL_CHANNEL_INVALID' });
+    const sent = await setupTicketPanel(guild, channel, req.session.user.id);
+    res.json({ ok: true, channelId: sent.channelId, messageId: sent.id });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message || 'TICKET_SETUP_FAILED' }); }
+});
+
+app.post('/api/guilds/:guildId/auto-role', requireAuth, async (req, res) => {
+  try {
+    const { guild } = await requireGuildControl(req, res);
+    const member = await fetchGuildMember(guild, req.session.user.discordId || req.session.user.id);
+    ensureMemberPermission(member, PermissionFlagsBits.ManageRoles);
+    const roleId = req.body?.roleId ? String(req.body.roleId) : null;
+    if (roleId) {
+      const role = await guild.roles.fetch(roleId).catch(() => null);
+      if (!role || role.managed || role.id === guild.id) return res.status(400).json({ error: 'AUTO_ROLE_INVALID' });
+      const me = guild.members.me || await guild.members.fetchMe();
+      if (role.position >= me.roles.highest.position) return res.status(400).json({ error: 'AUTO_ROLE_ABOVE_BOT' });
+    }
+    const config = await setConfig(guild.id, { auto_role_id: roleId });
+    await addActivity(guild.id, req.session.user.id, 'autorole:updated', roleId ? 'Auto-role set to ' + (await guild.roles.fetch(roleId)).name : 'Auto-role disabled');
+    res.json({ ok: true, auto_role_id: config.auto_role_id });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message || 'AUTO_ROLE_UPDATE_FAILED' }); }
+});
 
 app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) => {
   try {
