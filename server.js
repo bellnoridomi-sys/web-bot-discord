@@ -917,14 +917,35 @@ app.get('/api/me', async (req, res) => {
   }
   const userGuilds = s.guilds || [];
   const botGuildIds = new Set(bot.guilds.cache.keys());
+  const canManageGuild = g => Boolean(g.owner) || (BigInt(g.permissions || '0') & (8n | 32n)) !== 0n;
+  const manageableGuilds = userGuilds.filter(canManageGuild).map(g => ({
+    id: g.id,
+    name: g.name,
+    icon: g.icon,
+    owner: Boolean(g.owner),
+    permissions: g.permissions,
+    manageable: true,
+    botPresent: botGuildIds.has(g.id)
+  }));
   const guilds = userGuilds.filter(g => botGuildIds.has(g.id)).map(g => ({
     id: g.id, name: g.name, icon: g.icon, owner: Boolean(g.owner), permissions: g.permissions,
-    manageable: Boolean(g.owner) || (BigInt(g.permissions || '0') & (8n | 32n)) !== 0n
+    manageable: canManageGuild(g), botPresent: true
   }));
+  const botGuildsNotInUserList = [...bot.guilds.cache.values()]
+    .filter(g => !userGuilds.some(ug => ug.id === g.id))
+    .map(g => ({ id: g.id, name: g.name }));
   res.json({
-    authenticated: true, user: s.user, guilds,
-    guildDiagnostics: { discordGuildCount: userGuilds.length, botGuildCount: bot.guilds.cache.size, sharedGuildCount: guilds.length, botReady: bot.isReady() },
-    bot: { ready: bot.isReady(), tag: bot.user?.tag || null, guilds: bot.guilds.cache.size, ping: Math.round(bot.ws.ping) }
+    authenticated: true, user: s.user, guilds, manageableGuilds,
+    guildDiagnostics: {
+      discordGuildCount: userGuilds.length,
+      botGuildCount: bot.guilds.cache.size,
+      sharedGuildCount: guilds.length,
+      manageableGuildCount: manageableGuilds.length,
+      manageableMissingBotCount: manageableGuilds.filter(g => !g.botPresent).length,
+      botGuildsNotInUserList,
+      botReady: bot.isReady()
+    },
+    bot: { ready: bot.isReady(), id: bot.user?.id || null, tag: bot.user?.tag || null, guilds: bot.guilds.cache.size, ping: Math.round(bot.ws.ping) }
   });
 });
 app.get('/api/activity', requireAuth, async (req, res) => {
