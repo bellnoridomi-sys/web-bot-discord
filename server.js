@@ -159,11 +159,31 @@ async function setConfig(guildId, patch) {
 }
 
 async function addActivity(guildId, userId, action, details) {
-  const row = { guild_id: guildId || null, user_id: userId || null, action, details, created_at: new Date().toISOString() };
+  const row = { guild_id: guildId || null, user_id: userId || null, action, details: String(details || '').slice(0, 1500), created_at: new Date().toISOString() };
   activityCache.unshift(row);
   while (activityCache.length > 80) activityCache.pop();
-  if (pool) await dbQuery('INSERT INTO activity(guild_id,user_id,action,details) VALUES($1,$2,$3,$4)', [guildId || null, userId || null, action, details]);
-  io.emit('activity', row);
+  if (pool) await dbQuery('INSERT INTO activity(guild_id,user_id,action,details) VALUES($1,$2,$3,$4)', [guildId || null, userId || null, action, row.details]);
+  if (guildId) io.to('guild:' + guildId).emit('activity', row);
+  sendActivityToDiscord(row).catch(error => console.warn('Discord audit delivery failed:', error.message));
+  return row;
+}
+
+async function sendActivityToDiscord(row) {
+  if (!row.guild_id || !bot.isReady()) return;
+  const config = await getConfig(row.guild_id).catch(() => null);
+  if (!config?.log_channel_id) return;
+  const channel = await bot.channels.fetch(config.log_channel_id).catch(() => null);
+  if (!channel?.isTextBased?.() || !channel.guild || channel.guild.id !== row.guild_id) return;
+  const me = channel.guild.members.me || await channel.guild.members.fetchMe().catch(() => null);
+  const permissions = me ? channel.permissionsFor(me) : null;
+  if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) return;
+  const embed = new EmbedBuilder()
+    .setColor(row.action?.startsWith('error:') ? 0xED4245 : 0x5865F2)
+    .setTitle('🧾 Aki Activity · ' + String(row.action || 'event').slice(0, 200))
+    .setDescription(String(row.details || 'No details').slice(0, 3500))
+    .addFields({ name: 'Actor ID', value: String(row.user_id || 'System').slice(0, 100), inline: true }, { name: 'Source', value: String(row.action || 'event').startsWith('web:') ? 'Web dashboard' : 'Discord / Bot', inline: true })
+    .setTimestamp(new Date(row.created_at));
+  await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
 }
 
 async function addWarning(guildId, userId, moderatorId, reason) {
@@ -273,6 +293,32 @@ function appendSetCookie(res, cookie) {
 function setSessionCookie(res, sid) {
   const cookie = SESSION_COOKIE + '=' + sid + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + (60 * 60 * 24 * 7) + (isProd ? '; Secure' : '');
   appendSetCookie(res, cookie);
+}
+function setupActivitySocketAuth() {
+  io.use((socket, next) => {
+    const sid = getCookieValue({ headers: socket.handshake.headers }, SESSION_COOKIE);
+    const session = sid ? sessionStore.get(sid) : null;
+    if (!session) {
+      const error = new Error('AUTH_REQUIRED');
+      error.data = { code: 'AUTH_REQUIRED' };
+      return next(error);
+    }
+    socket.data.sessionSid = sid;
+    next();
+  });
+  io.on('connection', socket => {
+    socket.on('watch-guild', guildId => {
+      for (const room of socket.rooms) if (room.startsWith('guild:')) socket.leave(room);
+      if (typeof guildId !== 'string' || !/^\d{17,20}$/.test(guildId)) return socket.emit('socket-error', { error: 'INVALID_GUILD' });
+      const session = sessionStore.get(socket.data.sessionSid);
+      if (!session) return socket.disconnect(true);
+      const meta = (session.guilds || []).find(g => g.id === guildId);
+      if (!bot.guilds.cache.has(guildId) || !canManageGuildFromOAuthMeta(meta)) {
+        return socket.emit('socket-error', { error: 'NO_GUILD_ACCESS' });
+      }
+      socket.join('guild:' + guildId);
+    });
+  });
 }
 function clearSessionCookie(res) {
   appendSetCookie(res, SESSION_COOKIE + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' + (isProd ? '; Secure' : ''));
@@ -851,10 +897,11 @@ bot.on('interactionCreate', async interaction => {
     const payload = await runCommand(interaction.commandName, { guild: interaction.guild, userId: interaction.user.id, userName: interaction.user.globalName || interaction.user.username, channel: interaction.channel, args: extractInteractionArgs(interaction), source: 'discord' });
     await interaction.reply(payload);
     if (interaction.commandName === 'poll') { const sent = await interaction.fetchReply(); await addPollReactions(sent, [extractInteractionArgs(interaction).option1, extractInteractionArgs(interaction).option2, extractInteractionArgs(interaction).option3, extractInteractionArgs(interaction).option4].filter(Boolean).length); }
-    await addActivity(interaction.guildId, interaction.user.id, `/${interaction.commandName}`, 'Discord command');
+    await addActivity(interaction.guildId, interaction.user.id, `/${interaction.commandName}`, `✅ Slash command bởi ${interaction.user.globalName || interaction.user.username} tại #${interaction.channel?.name || 'unknown-channel'}.`);
   } catch (error) {
     const msg = `⚠️ ${error.message}`;
     if (interaction.replied || interaction.deferred) await interaction.followUp({ content: msg, ephemeral: true }); else await interaction.reply({ content: msg, ephemeral: true });
+    addActivity(interaction.guildId, interaction.user.id, `error:/${interaction.commandName}`, `❌ Slash command thất bại bởi ${interaction.user.globalName || interaction.user.username}: ${error.message}`).catch(() => {});
   }
 });
 
@@ -889,10 +936,20 @@ bot.on('messageCreate', async message => {
     if (!basicMap[name]) return;
     const payload = await runCommand(name, { guild: message.guild, userId: message.author.id, userName: message.member?.displayName, channel: message.channel, args: basicMap[name], source: 'prefix' });
     await message.reply(payload);
-  } catch (error) { await message.reply(`⚠️ ${error.message}`).catch(() => {}); }
+    await addActivity(message.guild.id, message.author.id, `!${name}`, `✅ Prefix command bởi ${message.member?.displayName || message.author.username} tại #${message.channel.name}.`);
+  } catch (error) {
+    await message.reply(`⚠️ ${error.message}`).catch(() => {});
+    addActivity(message.guild.id, message.author.id, 'error:prefix', `❌ Prefix command thất bại bởi ${message.author.username}: ${error.message}`).catch(() => {});
+  }
 });
 
 // Auto voice state recovery when Discord moves/disconnects the bot.
+bot.on('guildMemberAdd', member => {
+  addActivity(member.guild.id, member.id, 'member:join', `👋 ${member.user.globalName || member.user.username} đã tham gia server.`).catch(() => {});
+});
+bot.on('guildMemberRemove', member => {
+  addActivity(member.guild.id, member.id, 'member:leave', `👋 ${member.user.globalName || member.user.username} đã rời server.`).catch(() => {});
+});
 bot.on('voiceStateUpdate', async (oldState, newState) => {
   if (!bot.user || newState.id !== bot.user.id) return;
   const cfg = await getConfig(newState.guild.id);
@@ -949,7 +1006,7 @@ app.get('/api/me', async (req, res) => {
   });
 });
 app.get('/api/activity', requireAuth, async (req, res) => {
-  const allowed = new Set((req.session.guilds || []).map(g => g.id));
+  const allowed = new Set((req.session.guilds || []).filter(g => bot.guilds.cache.has(g.id) && canManageGuildFromOAuthMeta(g)).map(g => g.id));
   if (pool) {
     const r = await dbQuery('SELECT guild_id,user_id,action,details,created_at FROM activity WHERE guild_id = ANY($1) ORDER BY created_at DESC LIMIT 30', [[...allowed]]);
     return res.json({ items: r.rows });
@@ -978,6 +1035,8 @@ function canManageGuildFromOAuthMeta(meta) {
   catch { return false; }
 }
 
+setupActivitySocketAuth();
+
 async function requireGuildControl(req, res) {
   const guild = bot.guilds.cache.get(req.params.guildId);
   const meta = (req.session.guilds || []).find(x => x.id === req.params.guildId);
@@ -994,6 +1053,12 @@ app.put('/api/guilds/:guildId/config', requireAuth, async (req, res) => {
     if (body.auto_voice_channel_id) {
       const ch = await guild.channels.fetch(body.auto_voice_channel_id).catch(() => null);
       if (!ch || ![ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(ch.type)) return res.status(400).json({ error: 'VOICE_CHANNEL_INVALID' });
+    }
+    if (body.log_channel_id) {
+      const logChannel = await guild.channels.fetch(String(body.log_channel_id)).catch(() => null);
+      if (!logChannel || !logChannel.isTextBased?.() || logChannel.guild?.id !== guild.id) return res.status(400).json({ error: 'LOG_CHANNEL_INVALID' });
+      const me = guild.members.me || await guild.members.fetchMe();
+      if (!logChannel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) return res.status(403).json({ error: 'Bot needs View Channel, Send Messages and Embed Links in the selected audit channel.' });
     }
     const config = await setConfig(guild.id, { auto_voice_enabled: Boolean(body.auto_voice_enabled), auto_voice_channel_id: body.auto_voice_channel_id || null, prefix: String(body.prefix || '!').slice(0, 3), log_channel_id: body.log_channel_id || null });
     if (config.auto_voice_enabled) await joinGuildVoice(guild, config.auto_voice_channel_id, 'auto'); else getVoiceConnection(guild.id)?.destroy();
@@ -1055,7 +1120,7 @@ app.post('/api/guilds/:guildId/command', requireAuth, async (req, res) => {
     let sent = null;
     if (sendable) sent = await channel.send(payload);
     if (sent && name === 'poll') await addPollReactions(sent, [args.option1,args.option2,args.option3,args.option4].filter(Boolean).length);
-    await addActivity(guild.id, req.session.user.id, `web:${name}`, JSON.stringify(args));
+    await addActivity(guild.id, req.session.user.id, `web:${name}`, `✅ Chạy từ dashboard bởi ${req.session.user.username || 'user'} tại #${channel?.name || 'unknown-channel'}.`);
     res.json({ ok: true, command: name, payload: typeof payload === 'string' ? payload : 'embed', channelId: sent?.channelId || channel?.id || null, messageId: sent?.id || null });
   } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
 });
