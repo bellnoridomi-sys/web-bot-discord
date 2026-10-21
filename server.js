@@ -113,6 +113,13 @@ async function initDb() {
       details TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      state TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      created_at BIGINT NOT NULL,
+      existing_sid TEXT
+    );
+    CREATE INDEX IF NOT EXISTS oauth_states_created_at_idx ON oauth_states(created_at);
   `);
 }
 
@@ -258,54 +265,106 @@ function requireAuth(req, res, next) {
   req.session = s;
   next();
 }
+function appendSetCookie(res, cookie) {
+  const current = res.getHeader('Set-Cookie');
+  const cookies = current ? (Array.isArray(current) ? current : [current]) : [];
+  res.setHeader('Set-Cookie', [...cookies, cookie]);
+}
 function setSessionCookie(res, sid) {
-  const cookie = `${SESSION_COOKIE}=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 7}${isProd ? '; Secure' : ''}`;
-  res.setHeader('Set-Cookie', cookie);
+  const cookie = SESSION_COOKIE + '=' + sid + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + (60 * 60 * 24 * 7) + (isProd ? '; Secure' : '');
+  appendSetCookie(res, cookie);
 }
 function clearSessionCookie(res) {
-  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isProd ? '; Secure' : ''}`);
+  appendSetCookie(res, SESSION_COOKIE + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' + (isProd ? '; Secure' : ''));
 }
 
 function encodeState() {
   return crypto.randomBytes(24).toString('hex');
 }
-
-async function discordOAuthCallback(code) {
-  const body = new URLSearchParams({
-    client_id: process.env.DISCORD_CLIENT_ID || '',
-    client_secret: process.env.DISCORD_CLIENT_SECRET || '',
-    grant_type: 'authorization_code',
-    code,
-    redirect_uri: `${SITE_URL}/auth/discord/callback`
-  });
-  const tokenRes = await fetch('https://discord.com/api/oauth2/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-  if (!tokenRes.ok) throw new Error(`Discord token exchange failed (${tokenRes.status})`);
-  return tokenRes.json();
+function validOAuthState(state) {
+  return typeof state === 'string' && /^[a-f0-9]{48}$/.test(state);
 }
-async function discordApi(path, token) {
-  const r = await fetch(`https://discord.com/api/v10${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!r.ok) throw new Error(`Discord API ${path} failed (${r.status})`);
-  return r.json();
+function oauthStateCookieName(state) {
+  return validOAuthState(state) ? 'aki_oas_' + state : null;
+}
+function getCookieValue(req, name) {
+  const entry = req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(name + '='));
+  return entry ? entry.slice(name.length + 1) : null;
+}
+function setOAuthStateCookie(res, state) {
+  const name = oauthStateCookieName(state);
+  if (!name) throw new Error('Invalid OAuth state format.');
+  appendSetCookie(res, name + '=' + state + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=600' + (isProd ? '; Secure' : ''));
+}
+function hasOAuthStateCookie(req, state) {
+  const name = oauthStateCookieName(state);
+  return Boolean(name && getCookieValue(req, name) === state);
+}
+function clearOAuthStateCookie(res, state) {
+  const name = oauthStateCookieName(state);
+  if (name) appendSetCookie(res, name + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' + (isProd ? '; Secure' : ''));
+}
+async function storeOAuthState(state, data) {
+  if (pool) {
+    await dbQuery(
+      'INSERT INTO oauth_states(state, provider, created_at, existing_sid) VALUES($1,$2,$3,$4) ON CONFLICT(state) DO UPDATE SET provider=EXCLUDED.provider, created_at=EXCLUDED.created_at, existing_sid=EXCLUDED.existing_sid',
+      [state, data.provider, data.createdAt, data.existingSid || null]
+    );
+    return;
+  }
+  oauthStateStore.set(state, data);
+}
+async function consumeOAuthState(stateKey) {
+  if (!validOAuthState(stateKey)) return null;
+  if (pool) {
+    const result = await dbQuery(
+      'DELETE FROM oauth_states WHERE state=$1 RETURNING provider, created_at, existing_sid',
+      [stateKey]
+    );
+    const row = result?.rows?.[0];
+    if (!row) return null;
+    return {
+      provider: row.provider,
+      createdAt: Number(row.created_at),
+      existingSid: row.existing_sid || null
+    };
+  }
+  const row = oauthStateStore.get(stateKey) || null;
+  oauthStateStore.delete(stateKey);
+  return row;
 }
 
-app.get('/auth/discord', (req, res) => {
+app.get('/auth/discord', async (req, res) => {
   if (!process.env.DISCORD_CLIENT_ID) return res.status(503).send('Discord OAuth is not configured. Add DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET.');
   const state = encodeState();
-  const existingSid = req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(`${SESSION_COOKIE}=`))?.split('=')[1];
-  oauthStateStore.set(state, { provider: 'discord', createdAt: Date.now(), existingSid });
-  const url = new URL('https://discord.com/oauth2/authorize');
-  url.searchParams.set('client_id', process.env.DISCORD_CLIENT_ID);
-  url.searchParams.set('response_type', 'code');
-  url.searchParams.set('redirect_uri', `${SITE_URL}/auth/discord/callback`);
-  url.searchParams.set('scope', 'identify guilds');
-  url.searchParams.set('state', state);
-  res.redirect(url.toString());
+  const existingSid = getCookieValue(req, SESSION_COOKIE);
+  try {
+    await storeOAuthState(state, { provider: 'discord', createdAt: Date.now(), existingSid });
+    setOAuthStateCookie(res, state);
+    const url = new URL('https://discord.com/oauth2/authorize');
+    url.searchParams.set('client_id', process.env.DISCORD_CLIENT_ID);
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('redirect_uri', SITE_URL + '/auth/discord/callback');
+    url.searchParams.set('scope', 'identify guilds');
+    url.searchParams.set('state', state);
+    return res.redirect(url.toString());
+  } catch (error) {
+    console.error('Could not create Discord OAuth state:', error);
+    return res.status(503).send('Không tạo được phiên đăng nhập Discord. Hãy thử lại sau.');
+  }
 });
 app.get('/auth/discord/callback', async (req, res) => {
+  const stateKey = typeof req.query.state === 'string' ? req.query.state : '';
   try {
-    const state = oauthStateStore.get(req.query.state);
-    oauthStateStore.delete(req.query.state);
-    if (!state || Date.now() - state.createdAt > 10 * 60_000) return res.status(400).send('Invalid or expired OAuth state.');
+    const cookieMatches = hasOAuthStateCookie(req, stateKey);
+    clearOAuthStateCookie(res, stateKey);
+    if (!cookieMatches) return res.status(400).send('Invalid or expired OAuth state. Hãy quay lại trang chủ và đăng nhập Discord lại.');
+    const state = await consumeOAuthState(stateKey);
+    if (!state || state.provider !== 'discord' || Date.now() - state.createdAt > 10 * 60_000) {
+      return res.status(400).send('Invalid or expired OAuth state. Hãy quay lại trang chủ và đăng nhập Discord lại.');
+    }
+    if (req.query.error) return res.status(400).send('Bạn đã huỷ đăng nhập Discord. Hãy quay lại trang chủ để thử lại.');
+    if (typeof req.query.code !== 'string' || !req.query.code) return res.status(400).send('Discord không trả về mã đăng nhập. Hãy thử đăng nhập lại.');
     const token = await discordOAuthCallback(req.query.code);
     const user = await discordApi('/users/@me', token.access_token);
     const guilds = await discordApi('/users/@me/guilds', token.access_token);
@@ -319,53 +378,67 @@ app.get('/auth/discord/callback', async (req, res) => {
       sid = makeSession({ provider: 'discord', id: user.id, discordId: user.id, username: user.global_name || user.username, avatar: user.avatar, discriminator: user.discriminator }, guilds);
     }
     setSessionCookie(res, sid);
-    res.redirect('/dashboard');
+    return res.redirect('/dashboard');
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Discord login failed. Check OAuth redirect URL and credentials.');
+    console.error('Discord OAuth callback failed:', error);
+    return res.status(500).send('Discord login failed. Check OAuth redirect URL and credentials.');
   }
 });
 
-app.get('/auth/google', (req, res) => {
+app.get('/auth/google', async (req, res) => {
   if (!process.env.GOOGLE_CLIENT_ID) return res.status(503).send('Google OAuth is not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.');
   const state = encodeState();
-  oauthStateStore.set(state, { provider: 'google', createdAt: Date.now() });
-  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-  url.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
-  url.searchParams.set('redirect_uri', `${SITE_URL}/auth/google/callback`);
-  url.searchParams.set('response_type', 'code');
-  url.searchParams.set('scope', 'openid profile email');
-  url.searchParams.set('state', state);
-  url.searchParams.set('access_type', 'online');
-  url.searchParams.set('prompt', 'select_account');
-  res.redirect(url.toString());
+  try {
+    await storeOAuthState(state, { provider: 'google', createdAt: Date.now(), existingSid: null });
+    setOAuthStateCookie(res, state);
+    const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    url.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
+    url.searchParams.set('redirect_uri', SITE_URL + '/auth/google/callback');
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('scope', 'openid profile email');
+    url.searchParams.set('state', state);
+    url.searchParams.set('access_type', 'online');
+    url.searchParams.set('prompt', 'select_account');
+    return res.redirect(url.toString());
+  } catch (error) {
+    console.error('Could not create Google OAuth state:', error);
+    return res.status(503).send('Không tạo được phiên đăng nhập Google. Hãy thử lại sau.');
+  }
 });
 app.get('/auth/google/callback', async (req, res) => {
+  const stateKey = typeof req.query.state === 'string' ? req.query.state : '';
   try {
-    const state = oauthStateStore.get(req.query.state);
-    oauthStateStore.delete(req.query.state);
-    if (!state || Date.now() - state.createdAt > 10 * 60_000) return res.status(400).send('Invalid or expired OAuth state.');
+    const cookieMatches = hasOAuthStateCookie(req, stateKey);
+    clearOAuthStateCookie(res, stateKey);
+    if (!cookieMatches) return res.status(400).send('Invalid or expired OAuth state. Hãy quay lại trang chủ và đăng nhập Google lại.');
+    const state = await consumeOAuthState(stateKey);
+    if (!state || state.provider !== 'google' || Date.now() - state.createdAt > 10 * 60_000) {
+      return res.status(400).send('Invalid or expired OAuth state. Hãy quay lại trang chủ và đăng nhập Google lại.');
+    }
+    if (req.query.error) return res.status(400).send('Bạn đã huỷ đăng nhập Google. Hãy quay lại trang chủ để thử lại.');
+    if (typeof req.query.code !== 'string' || !req.query.code) return res.status(400).send('Google không trả về mã đăng nhập. Hãy thử đăng nhập lại.');
     const body = new URLSearchParams({
       code: req.query.code,
       client_id: process.env.GOOGLE_CLIENT_ID || '',
       client_secret: process.env.GOOGLE_CLIENT_SECRET || '',
-      redirect_uri: `${SITE_URL}/auth/google/callback`,
+      redirect_uri: SITE_URL + '/auth/google/callback',
       grant_type: 'authorization_code'
     });
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-    if (!tokenRes.ok) throw new Error(`Google token exchange failed (${tokenRes.status})`);
+    if (!tokenRes.ok) throw new Error('Google token exchange failed (' + tokenRes.status + ')');
     const token = await tokenRes.json();
-    const userRes = await fetch('https://openidconnect.googleapis.com/v1/userinfo', { headers: { Authorization: `Bearer ${token.access_token}` } });
-    if (!userRes.ok) throw new Error(`Google userinfo failed (${userRes.status})`);
+    const userRes = await fetch('https://openidconnect.googleapis.com/v1/userinfo', { headers: { Authorization: 'Bearer ' + token.access_token } });
+    if (!userRes.ok) throw new Error('Google userinfo failed (' + userRes.status + ')');
     const user = await userRes.json();
     const sid = makeSession({ provider: 'google', id: user.sub, username: user.name || user.email, email: user.email, avatar: user.picture }, []);
     setSessionCookie(res, sid);
-    res.redirect('/dashboard');
+    return res.redirect('/dashboard');
   } catch (error) {
-    console.error(error);
-    res.status(500).send('Google login failed. Check OAuth redirect URL and credentials.');
+    console.error('Google OAuth callback failed:', error);
+    return res.status(500).send('Google login failed. Check OAuth redirect URL and credentials.');
   }
 });
+
 app.get('/auth/logout', (req, res) => {
   const sid = req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(`${SESSION_COOKIE}=`))?.split('=')[1];
   if (sid) sessionStore.delete(sid);
@@ -1003,6 +1076,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [sid, session] of sessionStore) if (now - session.lastSeen > 7 * 24 * 60 * 60_000) sessionStore.delete(sid);
   for (const [state, obj] of oauthStateStore) if (now - obj.createdAt > 10 * 60_000) oauthStateStore.delete(state);
+  if (pool) dbQuery('DELETE FROM oauth_states WHERE created_at < $1', [now - 10 * 60_000]).catch(error => console.error('OAuth state cleanup failed:', error.message));
 }, 10 * 60_000);
 setInterval(reminderTick, 10_000);
 
