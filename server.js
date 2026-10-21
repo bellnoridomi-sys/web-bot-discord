@@ -934,6 +934,11 @@ app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) =>
         if (existing) { result.skipped.push('channel:' + name); continue; }
         const channel = await guild.channels.create({
           name, type, parent: category.id,
+          permissionOverwrites: group.private ? [
+            { id: everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: roleMap['🛡️ Moderator'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+            { id: roleMap['🆘 Support'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+          ] : undefined,
           topic: type === ChannelType.GuildText ? String(channelTopic || '').slice(0, 1024) || undefined : undefined,
           reason: 'Aki Server Builder template'
         });
