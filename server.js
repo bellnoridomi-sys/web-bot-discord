@@ -307,6 +307,9 @@ function setupActivitySocketAuth() {
     next();
   });
   io.on('connection', socket => {
+    socket.on('unwatch-guild', () => {
+      for (const room of socket.rooms) if (room.startsWith('guild:')) socket.leave(room);
+    });
     socket.on('watch-guild', guildId => {
       for (const room of socket.rooms) if (room.startsWith('guild:')) socket.leave(room);
       if (typeof guildId !== 'string' || !/^\d{17,20}$/.test(guildId)) return socket.emit('socket-error', { error: 'INVALID_GUILD' });
@@ -1049,9 +1052,13 @@ app.put('/api/guilds/:guildId/config', requireAuth, async (req, res) => {
   try {
     const { guild } = await requireGuildControl(req, res);
     const body = req.body || {};
-    if (body.auto_voice_enabled && !body.auto_voice_channel_id) return res.status(400).json({ error: 'AUTO_VOICE_CHANNEL_REQUIRED' });
-    if (body.auto_voice_channel_id) {
-      const ch = await guild.channels.fetch(body.auto_voice_channel_id).catch(() => null);
+    const currentConfig = await getConfig(guild.id);
+    const voiceSettingsProvided = Object.prototype.hasOwnProperty.call(body, 'auto_voice_enabled') || Object.prototype.hasOwnProperty.call(body, 'auto_voice_channel_id');
+    const nextAutoVoiceEnabled = Object.prototype.hasOwnProperty.call(body, 'auto_voice_enabled') ? Boolean(body.auto_voice_enabled) : Boolean(currentConfig.auto_voice_enabled);
+    const nextAutoVoiceChannelId = Object.prototype.hasOwnProperty.call(body, 'auto_voice_channel_id') ? (body.auto_voice_channel_id || null) : (currentConfig.auto_voice_channel_id || null);
+    if (nextAutoVoiceEnabled && !nextAutoVoiceChannelId) return res.status(400).json({ error: 'AUTO_VOICE_CHANNEL_REQUIRED' });
+    if (nextAutoVoiceChannelId) {
+      const ch = await guild.channels.fetch(nextAutoVoiceChannelId).catch(() => null);
       if (!ch || ![ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(ch.type)) return res.status(400).json({ error: 'VOICE_CHANNEL_INVALID' });
     }
     if (body.log_channel_id) {
@@ -1060,8 +1067,17 @@ app.put('/api/guilds/:guildId/config', requireAuth, async (req, res) => {
       const me = guild.members.me || await guild.members.fetchMe();
       if (!logChannel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) return res.status(403).json({ error: 'Bot needs View Channel, Send Messages and Embed Links in the selected audit channel.' });
     }
-    const config = await setConfig(guild.id, { auto_voice_enabled: Boolean(body.auto_voice_enabled), auto_voice_channel_id: body.auto_voice_channel_id || null, prefix: String(body.prefix || '!').slice(0, 3), log_channel_id: body.log_channel_id || null });
-    if (config.auto_voice_enabled) await joinGuildVoice(guild, config.auto_voice_channel_id, 'auto'); else getVoiceConnection(guild.id)?.destroy();
+    const configPatch = {
+      auto_voice_enabled: nextAutoVoiceEnabled,
+      auto_voice_channel_id: nextAutoVoiceChannelId,
+      prefix: Object.prototype.hasOwnProperty.call(body, 'prefix') ? String(body.prefix || '!').slice(0, 3) : currentConfig.prefix || '!',
+      log_channel_id: Object.prototype.hasOwnProperty.call(body, 'log_channel_id') ? (body.log_channel_id || null) : currentConfig.log_channel_id || null
+    };
+    const config = await setConfig(guild.id, configPatch);
+    if (voiceSettingsProvided) {
+      if (config.auto_voice_enabled) await joinGuildVoice(guild, config.auto_voice_channel_id, 'auto');
+      else getVoiceConnection(guild.id)?.destroy();
+    }
     await addActivity(guild.id, req.session.user.id, 'settings', JSON.stringify(config));
     res.json({ config });
   } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
