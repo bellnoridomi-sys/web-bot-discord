@@ -1363,18 +1363,32 @@ app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) =>
     const preset = ['community', 'gaming', 'anime', 'market'].includes(req.body?.preset) ? req.body.preset : 'community';
     const topic = String(req.body?.topic || '').trim().slice(0, 180);
     const prefix = { community: '🌐', gaming: '🎮', anime: '🌸', market: '🛍️' }[preset];
+    // Combined template with all three primary themes: social, gaming and trade.
     const templates = {
-      community: { start: [['📜・nội-quy','Đọc nội quy và hướng dẫn.'],['👋・chào-mừng',topic || 'Chào mừng đến với cộng đồng!'],['🎭・nhận-role','Chọn role phù hợp.']], chat: [['💬・chat-chung','Trò chuyện cùng mọi người.'],['😂・meme','Chia sẻ meme vui vẻ.'],['📸・chia-sẻ','Ảnh, video và khoảnh khắc.'],['🤝・tìm-bạn','Kết bạn và tìm người chơi cùng.']], fun: [['🎲・bot-commands','Dùng lệnh bot tại đây.'],['🎵・chia-sẻ-nhạc','Chia sẻ bài hát yêu thích.']], voice: [['🔊・phòng-chung',''],['🎮・chơi-cùng-nhau',''],['🌙・chill-room','']], staff: [['🛡️・staff-chat','Kênh nội bộ của đội ngũ.'],['🧾・staff-log','Ghi chú và xử lý sự việc.']] },
-      gaming: { start: [['📜・nội-quy','Đọc nội quy trước khi tham gia.'],['👋・chào-mừng',topic || 'Chào mừng game thủ!'],['🎭・nhận-role','Chọn game và role.']], chat: [['🎮・tìm-đồng-đội','Tìm party và teammate.'],['💬・chat-chung','Trò chuyện game thủ.'],['🏆・khoe-thành-tích','Chia sẻ rank và thành tích.'],['😂・meme-game','Meme game vui vẻ.']], fun: [['🤖・bot-commands','Dùng lệnh bot tại đây.'],['📣・thông-báo-game','Tin tức và sự kiện game.']], voice: [['🎧・party-1',''],['🎧・party-2',''],['🏆・ranked-team',''],['🌙・chill-room','']], staff: [['🛡️・staff-chat','Kênh nội bộ của đội ngũ.'],['🧾・staff-log','Ghi chú và xử lý sự việc.']] },
-      anime: { start: [['📜・nội-quy','Đọc nội quy của hội.'],['🌸・chào-mừng',topic || 'Chào mừng đến với thế giới anime!'],['🎭・nhận-role','Chọn role và sở thích.']], chat: [['🍡・trò-chuyện','Tán gẫu cùng hội.'],['🎨・fan-art','Chia sẻ fan art.'],['🎬・anime-manga','Bàn luận anime và manga.'],['😂・meme-anime','Meme anime.']], fun: [['🤖・bot-commands','Dùng lệnh bot tại đây.'],['🎵・anime-music','Chia sẻ nhạc anime.']], voice: [['🎧・phòng-tám',''],['🌸・chill-room',''],['🎬・xem-cùng-nhau','']], staff: [['🛡️・staff-chat','Kênh nội bộ của đội ngũ.'],['🧾・staff-log','Ghi chú và xử lý sự việc.']] },
-      market: { start: [['📜・nội-quy','Đọc quy định giao dịch.'],['👋・chào-mừng',topic || 'Chào mừng đến với khu giao dịch!'],['🎭・nhận-role','Chọn role cần thiết.']], chat: [['🛍️・chợ-chung','Trao đổi và giới thiệu sản phẩm.'],['📦・mua-bán','Đăng tin mua bán theo quy định.'],['🤝・tìm-đối-tác','Tìm đối tác và cộng tác.'],['⭐・đánh-giá','Chia sẻ đánh giá giao dịch.']], fun: [['🤖・bot-commands','Dùng lệnh bot tại đây.'],['📣・thông-báo','Thông báo từ đội ngũ.']], voice: [['🔊・phòng-chung',''],['🤝・tư-vấn','']], staff: [['🛡️・staff-chat','Kênh nội bộ của đội ngũ.'],['🧾・staff-log','Ghi chú và xử lý sự việc.']] }
-    }[preset];
+      start: [['📜・nội-quy','Đọc nội quy trước khi tham gia.'],['👋・chào-mừng',topic || 'Chào mừng đến với cộng đồng!'],['✅・xác-minh','Thông tin xác minh và quy tắc an toàn.'],['🎭・nhận-role','Dùng bảng role để chọn sở thích.'],['📣・thông-báo','Thông báo chính thức từ đội ngũ.']],
+      community: [['💬・chat-chung','Trò chuyện và giao lưu cùng mọi người.'],['👋・giới-thiệu','Giới thiệu bản thân và sở thích.'],['🤝・làm-quen','Làm quen bạn mới.'],['🫶・tìm-bạn','Tìm bạn nói chuyện và kết bạn.'],['❓・hỏi-đáp','Hỏi đáp chung.'],['🌏・tám-chuyện','Chủ đề đời sống và tán gẫu.'],['📸・khoe-ảnh','Chia sẻ ảnh và khoảnh khắc.'],['😂・meme','Meme vui vẻ.'],['🎨・sáng-tạo','Fan art, thiết kế và sáng tạo.'],['🎧・chia-sẻ-nhạc','Chia sẻ bài nhạc yêu thích.'],['💡・ý-tưởng','Đóng góp ý tưởng cho server.']],
+      gaming: [['🎮・game-chat','Trò chuyện về game.'],['🧑‍🤝‍🧑・tìm-đồng-đội','Tìm teammate và lập party.'],['🔎・tìm-party','Đăng lịch và tìm nhóm chơi.'],['🏆・khoe-rank','Chia sẻ rank và thành tích.'],['🎬・clip-game','Clip highlight và gameplay.'],['🗓️・lịch-chơi','Hẹn giờ chơi cùng nhau.'],['🕹️・game-khac','Các tựa game khác.'],['🎁・giveaway','Quà tặng và sự kiện game.']],
+      trade: [['🛍️・chợ-giao-dịch','Khu vực mua bán và trao đổi.'],['📦・đăng-bán','Đăng sản phẩm muốn bán.'],['🛒・tìm-mua','Đăng nhu cầu muốn mua.'],['🔁・trao-đổi','Trade và trao đổi vật phẩm.'],['💬・hỏi-giá','Tham khảo giá và định giá.'],['⭐・đánh-giá-giao-dịch','Đánh giá giao dịch đã hoàn tất.'],['✅・legit-vouches','Lịch sử xác nhận legit từ staff.'],['🛡️・yêu-cầu-middleman','Yêu cầu trung gian khi cần.'],['🚨・báo-cáo-scam','Báo cáo giao dịch đáng ngờ.']],
+      fun: [['🎲・bot-commands','Dùng lệnh bot tại đây.'],['📊・bình-chọn','Poll và bình chọn cộng đồng.'],['🎉・sự-kiện','Hoạt động và sự kiện.'],['🤖・bot-spam','Lệnh bot và tiện ích.'],['📜・góp-ý','Góp ý với ban quản trị.']],
+      support: [['🎫・mở-ticket','Dùng nút ticket panel để mở kênh riêng tư.'],['❔・faq-hỗ-trợ','Các câu hỏi thường gặp.'],['🧾・hướng-dẫn-giao-dịch','Hướng dẫn giao dịch an toàn.']],
+      voice: [['🔊・voice-lounge','Phòng voice giao lưu chung.'],['🎮・gaming-party-1','Voice tìm đồng đội 1.'],['🎮・gaming-party-2','Voice tìm đồng đội 2.'],['🎮・gaming-party-3','Voice tìm đồng đội 3.'],['🤝・kết-bạn-voice','Voice làm quen bạn mới.'],['🛍️・trade-talk','Voice trao đổi và hỏi đáp.'],['🌙・chill-room','Phòng thư giãn.'],['🎵・music-lounge','Phòng nghe nhạc.']],
+      staff: [['🛡️・staff-chat','Kênh nội bộ đội ngũ.'],['🧾・staff-log','Log hoạt động của bot và dashboard.'],['✅・legit-review','Staff xem xét yêu cầu legit.'],['🛍️・trade-reports','Xử lý báo cáo giao dịch.'],['🎫・ticket-staff','Điều phối hỗ trợ.'],['🔨・mod-actions','Ghi chú xử lý moderation.']]
+    };
     const result = { preset, roles: [], categories: [], channels: [], skipped: [] };
     const roleSpecs = [
+      { name: '👑 Admin', color: 0xED4245, permissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ModerateMembers, PermissionFlagsBits.ViewAuditLog] },
       { name: '🛡️ Moderator', color: 0x5865F2, permissions: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ModerateMembers, PermissionFlagsBits.ViewAuditLog] },
+      { name: '🧾 Trade Moderator', color: 0xFEE75C, permissions: [PermissionFlagsBits.ManageMessages] },
       { name: '🆘 Support', color: 0x57F287, permissions: [PermissionFlagsBits.ManageMessages] },
+      { name: '✅ Legit', color: 0x57F287, permissions: [] },
       { name: '💎 VIP', color: 0xEB459E, permissions: [] },
-      { name: '👥 Member', color: 0x99AAB5, permissions: [] }
+      { name: '👥 Member', color: 0x99AAB5, permissions: [] },
+      { name: '🎮 Gamer', color: 0x5865F2, permissions: [] },
+      { name: '💬 Social', color: 0x57F287, permissions: [] },
+      { name: '🛍️ Trader', color: 0xFEE75C, permissions: [] },
+      { name: '🛒 Buyer', color: 0xEB459E, permissions: [] },
+      { name: '📦 Seller', color: 0xED4245, permissions: [] },
+      { name: '🔔 Event Ping', color: 0x99AAB5, permissions: [] }
     ];
     const roleMap = {};
     for (const spec of roleSpecs) {
@@ -1385,11 +1399,15 @@ app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) =>
       roleMap[spec.name] = role;
       result.roles.push({ name: role.name, created: !existed });
     }
+    await setConfig(guild.id, { auto_role_id: roleMap['👥 Member'].id });
     const everyone = guild.roles.everyone;
     const groups = [
       { key: 'start', name: '📌・BẮT ĐẦU', items: templates.start },
-      { key: 'chat', name: prefix + '・CỘNG ĐỒNG', items: templates.chat },
-      { key: 'fun', name: prefix + '・BOT & TIỆN ÍCH', items: templates.fun },
+      { key: 'community', name: '💬・TRÒ CHUYỆN & GIAO LƯU', items: templates.community },
+      { key: 'gaming', name: '🎮・GAME & KẾT BẠN', items: templates.gaming },
+      { key: 'trade', name: '🛍️・BUÔN BÁN & TRADE', items: templates.trade },
+      { key: 'fun', name: '🎉・BOT & GIẢI TRÍ', items: templates.fun },
+      { key: 'support', name: '🎫・HỖ TRỢ', items: templates.support },
       { key: 'voice', name: '🔊・PHÒNG VOICE', items: templates.voice },
       { key: 'staff', name: '🛡️・ĐỘI NGŨ', items: templates.staff, private: true }
     ];
@@ -1401,6 +1419,9 @@ app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) =>
         permissionOverwrites: group.private ? [
           { id: everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
           { id: roleMap['🛡️ Moderator'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+          { id: roleMap['👑 Admin'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+          { id: roleMap['🛡️ Moderator'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+          { id: roleMap['🧾 Trade Moderator'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
           { id: roleMap['🆘 Support'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
         ] : undefined,
         reason: 'Aki Server Builder template'
@@ -1417,7 +1438,10 @@ app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) =>
           permissionOverwrites: group.private ? [
             { id: everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
             { id: roleMap['🛡️ Moderator'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-            { id: roleMap['🆘 Support'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+            { id: roleMap['👑 Admin'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+          { id: roleMap['🛡️ Moderator'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+          { id: roleMap['🧾 Trade Moderator'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+          { id: roleMap['🆘 Support'].id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
           ] : undefined,
           topic: type === ChannelType.GuildText ? String(channelTopic || '').slice(0, 1024) || undefined : undefined,
           reason: 'Aki Server Builder template'
