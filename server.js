@@ -125,6 +125,12 @@ async function initDb() {
       existing_sid TEXT
     );
     CREATE INDEX IF NOT EXISTS oauth_states_created_at_idx ON oauth_states(created_at);
+    CREATE TABLE IF NOT EXISTS dashboard_sessions (
+      sid TEXT PRIMARY KEY,
+      session_data JSONB NOT NULL,
+      last_seen BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS dashboard_sessions_last_seen_idx ON dashboard_sessions(last_seen);
   `);
 }
 
@@ -283,12 +289,52 @@ function makeSession(user, guilds) {
 }
 function getSession(req) {
   const sid = req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(`${SESSION_COOKIE}=`))?.split('=')[1];
-  return sid ? sessionStore.get(sid) : null;
+  const session = sid ? sessionStore.get(sid) : null;
+  if (session) session.lastSeen = Date.now();
+  return session;
+}
+async function persistSession(sid) {
+  if (!pool || !sid) return;
+  const session = sessionStore.get(sid);
+  if (!session) {
+    await dbQuery('DELETE FROM dashboard_sessions WHERE sid=$1', [sid]);
+    return;
+  }
+  await dbQuery(
+    'INSERT INTO dashboard_sessions(sid, session_data, last_seen) VALUES($1,$2::jsonb,$3) ON CONFLICT(sid) DO UPDATE SET session_data=EXCLUDED.session_data, last_seen=EXCLUDED.last_seen',
+    [sid, JSON.stringify(session), Number(session.lastSeen) || Date.now()]
+  );
+}
+async function restorePersistentSessions() {
+  if (!pool) return;
+  const cutoff = Date.now() - 7 * 24 * 60 * 60_000;
+  await dbQuery('DELETE FROM dashboard_sessions WHERE last_seen <= $1', [cutoff]);
+  const result = await dbQuery('SELECT sid, session_data FROM dashboard_sessions WHERE last_seen > $1', [cutoff]);
+  for (const row of result?.rows || []) {
+    const session = row.session_data;
+    if (!row.sid || !session?.user || !Array.isArray(session.guilds)) continue;
+    sessionStore.set(row.sid, session);
+  }
+  console.log(`Restored ${sessionStore.size} login session(s) from PostgreSQL.`);
+}
+async function persistAllSessions() {
+  if (!pool) return;
+  const cutoff = Date.now() - 7 * 24 * 60 * 60_000;
+  for (const [sid, session] of sessionStore) {
+    if (Number(session.lastSeen || session.createdAt || 0) <= cutoff) {
+      sessionStore.delete(sid);
+      continue;
+    }
+    await dbQuery(
+      'INSERT INTO dashboard_sessions(sid, session_data, last_seen) VALUES($1,$2::jsonb,$3) ON CONFLICT(sid) DO UPDATE SET session_data=EXCLUDED.session_data, last_seen=EXCLUDED.last_seen',
+      [sid, JSON.stringify(session), Number(session.lastSeen) || Date.now()]
+    );
+  }
+  await dbQuery('DELETE FROM dashboard_sessions WHERE last_seen <= $1', [cutoff]);
 }
 function requireAuth(req, res, next) {
   const s = getSession(req);
-  if (!s) return res.status(401).json({ error: 'NOT_AUTHENTICATED' });
-  s.lastSeen = Date.now();
+  if (!s) return res.status(401).json({ error: 'NOT_AUTHENTICATED', message: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập Discord lại.' });
   req.session = s;
   next();
 }
@@ -519,6 +565,7 @@ app.get('/auth/discord/callback', async (req, res) => {
       activeSession.discordRefreshToken = token.refresh_token || null;
       activeSession.discordTokenExpiresAt = Date.now() + (Number(token.expires_in) || 604800) * 1000;
     }
+    await persistSession(sid);
     setSessionCookie(res, sid);
     return res.redirect('/dashboard');
   } catch (error) {
@@ -578,6 +625,7 @@ app.get('/auth/google/callback', async (req, res) => {
     if (!userRes.ok) throw new Error('Google userinfo failed (' + userRes.status + ')');
     const user = await userRes.json();
     const sid = makeSession({ provider: 'google', id: user.sub, username: user.name || user.email, email: user.email, avatar: user.picture }, []);
+    await persistSession(sid);
     setSessionCookie(res, sid);
     return res.redirect('/dashboard');
   } catch (error) {
@@ -586,9 +634,12 @@ app.get('/auth/google/callback', async (req, res) => {
   }
 });
 
-app.get('/auth/logout', (req, res) => {
+app.get('/auth/logout', async (req, res) => {
   const sid = req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(`${SESSION_COOKIE}=`))?.split('=')[1];
-  if (sid) sessionStore.delete(sid);
+  if (sid) {
+    sessionStore.delete(sid);
+    if (pool) await dbQuery('DELETE FROM dashboard_sessions WHERE sid=$1', [sid]).catch(error => console.warn('Could not delete stored login session:', error.message));
+  }
   clearSessionCookie(res);
   res.redirect('/');
 });
@@ -1176,6 +1227,7 @@ app.get('/health', (_req, res) => res.status(200).send('OK'));
 app.get('/api/me', async (req, res) => {
   const s = getSession(req);
   if (!s) return res.json({ authenticated: false });
+  const sessionId = getCookieValue(req, SESSION_COOKIE);
   const accessToken = await getDiscordAccessTokenForSession(s).catch(error => {
     console.warn('Discord OAuth guild refresh token unavailable:', error.message);
     return null;
@@ -1184,6 +1236,7 @@ app.get('/api/me', async (req, res) => {
     try { s.guilds = await discordApi('/users/@me/guilds', accessToken); }
     catch (error) { console.warn('Discord guild list refresh failed:', error.message); }
   }
+  await persistSession(sessionId).catch(error => console.warn('Could not persist login session:', error.message));
   const userGuilds = s.guilds || [];
   const botGuildIds = new Set(bot.guilds.cache.keys());
   const canManageGuild = g => Boolean(g.owner) || (BigInt(g.permissions || '0') & (8n | 32n)) !== 0n;
@@ -1595,10 +1648,14 @@ setInterval(() => {
   for (const [state, obj] of oauthStateStore) if (now - obj.createdAt > 10 * 60_000) oauthStateStore.delete(state);
   if (pool) dbQuery('DELETE FROM oauth_states WHERE created_at < $1', [now - 10 * 60_000]).catch(error => console.error('OAuth state cleanup failed:', error.message));
 }, 10 * 60_000);
+setInterval(() => {
+  persistAllSessions().catch(error => console.error('Persistent session sync failed:', error.message));
+}, 30_000);
 setInterval(reminderTick, 10_000);
 
 async function boot() {
   await initDb();
+  await restorePersistentSessions();
   server.listen(PORT, '0.0.0.0', () => console.log(`Aki Dev dashboard listening on 0.0.0.0:${PORT}`));
   if (process.env.DISCORD_TOKEN) {
     bot.login(process.env.DISCORD_TOKEN).catch(error => console.error('Discord login failed:', error.message));
