@@ -16,6 +16,9 @@ import {
   PermissionsBitField,
   ChannelType,
   EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   REST,
   Routes,
   SlashCommandBuilder
@@ -77,8 +80,10 @@ async function initDb() {
       auto_voice_channel_id TEXT,
       prefix TEXT NOT NULL DEFAULT '!',
       log_channel_id TEXT,
+      auto_role_id TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS auto_role_id TEXT;
     CREATE TABLE IF NOT EXISTS warnings (
       id BIGSERIAL PRIMARY KEY,
       guild_id TEXT NOT NULL,
@@ -135,7 +140,8 @@ async function getConfig(guildId) {
     auto_voice_enabled: false,
     auto_voice_channel_id: null,
     prefix: '!',
-    log_channel_id: null
+    log_channel_id: null,
+    auto_role_id: null
   });
   return memory.configs.get(guildId);
 }
@@ -145,15 +151,16 @@ async function setConfig(guildId, patch) {
   const next = { ...current, ...patch };
   if (pool) {
     await dbQuery(`
-      INSERT INTO guild_configs(guild_id, auto_voice_enabled, auto_voice_channel_id, prefix, log_channel_id, updated_at)
-      VALUES($1,$2,$3,$4,$5,NOW())
+      INSERT INTO guild_configs(guild_id, auto_voice_enabled, auto_voice_channel_id, prefix, log_channel_id, auto_role_id, updated_at)
+      VALUES($1,$2,$3,$4,$5,$6,NOW())
       ON CONFLICT(guild_id) DO UPDATE SET
         auto_voice_enabled=EXCLUDED.auto_voice_enabled,
         auto_voice_channel_id=EXCLUDED.auto_voice_channel_id,
         prefix=EXCLUDED.prefix,
         log_channel_id=EXCLUDED.log_channel_id,
+        auto_role_id=EXCLUDED.auto_role_id,
         updated_at=NOW()
-    `, [guildId, Boolean(next.auto_voice_enabled), next.auto_voice_channel_id || null, next.prefix || '!', next.log_channel_id || null]);
+    `, [guildId, Boolean(next.auto_voice_enabled), next.auto_voice_channel_id || null, next.prefix || '!', next.log_channel_id || null, next.auto_role_id || null]);
   } else memory.configs.set(guildId, next);
   return next;
 }
@@ -625,6 +632,9 @@ const commands = [
   new SlashCommandBuilder().setName('ban').setDescription('Ban thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.BanMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
   new SlashCommandBuilder().setName('timeout').setDescription('Timeout thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addIntegerOption(o => o.setName('minutes').setDescription('1–40320 phút').setMinValue(1).setMaxValue(40320).setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
   new SlashCommandBuilder().setName('role').setDescription('Thêm/gỡ role.').setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles.toString()).addStringOption(o => o.setName('mode').setDescription('add hoặc remove').setRequired(true).addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' })).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addRoleOption(o => o.setName('role').setDescription('Role').setRequired(true)),
+  new SlashCommandBuilder().setName('legit').setDescription('Đánh dấu thành viên đã được staff xác minh.').setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên được xác minh').setRequired(true)),
+  new SlashCommandBuilder().setName('ticket-setup').setDescription('Đăng bảng mở ticket hỗ trợ.').setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh đăng bảng ticket').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(false)),
+  new SlashCommandBuilder().setName('role-panel').setDescription('Đăng bảng tự nhận role bằng nút emoji.').setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh đăng bảng role').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(false)),
   new SlashCommandBuilder().setName('announce').setDescription('Đăng thông báo đẹp.').setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages.toString()).addStringOption(o => o.setName('message').setDescription('Nội dung').setRequired(true)),
   new SlashCommandBuilder().setName('vc-join').setDescription('Bot vào voice.').setDefaultMemberPermissions(PermissionFlagsBits.Connect.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh voice').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(true)),
   new SlashCommandBuilder().setName('vc-leave').setDescription('Bot rời voice.').setDefaultMemberPermissions(PermissionFlagsBits.Connect.toString()),
