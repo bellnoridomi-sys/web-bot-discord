@@ -368,6 +368,25 @@ async function discordApi(apiPath, token) {
   if (!response.ok) throw new Error('DISCORD_API_' + response.status + '_' + apiPath);
   return response.json();
 }
+async function getDiscordAccessTokenForSession(session) {
+  if (session.discordAccessToken && Number(session.discordTokenExpiresAt || 0) > Date.now() + 30000) return session.discordAccessToken;
+  if (!session.discordRefreshToken) return null;
+  const clientId = process.env.DISCORD_CLIENT_ID || '';
+  const clientSecret = process.env.DISCORD_CLIENT_SECRET || '';
+  if (!clientId || !clientSecret) throw new Error('DISCORD_OAUTH_CONFIG_MISSING_FOR_REFRESH');
+  const body = new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'refresh_token', refresh_token: session.discordRefreshToken });
+  const response = await fetch('https://discord.com/api/oauth2/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+  if (!response.ok) {
+    let payload = {};
+    try { payload = await response.json(); } catch {}
+    throw new Error('DISCORD_REFRESH_' + response.status + '_' + (typeof payload.error === 'string' ? payload.error : 'unknown'));
+  }
+  const token = await response.json();
+  session.discordAccessToken = token.access_token;
+  session.discordTokenExpiresAt = Date.now() + (Number(token.expires_in) || 604800) * 1000;
+  if (token.refresh_token) session.discordRefreshToken = token.refresh_token;
+  return session.discordAccessToken;
+}
 function discordLoginErrorMessage(error) {
   const message = typeof error === 'string' ? error : String(error?.message || '');
   if (message === 'DISCORD_OAUTH_CONFIG_MISSING') {
@@ -437,6 +456,12 @@ app.get('/auth/discord/callback', async (req, res) => {
       linkedUser.lastSeen = Date.now();
     } else {
       sid = makeSession({ provider: 'discord', id: user.id, discordId: user.id, username: user.global_name || user.username, avatar: user.avatar, discriminator: user.discriminator }, guilds);
+    }
+    const activeSession = sessionStore.get(sid);
+    if (activeSession) {
+      activeSession.discordAccessToken = token.access_token;
+      activeSession.discordRefreshToken = token.refresh_token || null;
+      activeSession.discordTokenExpiresAt = Date.now() + (Number(token.expires_in) || 604800) * 1000;
     }
     setSessionCookie(res, sid);
     return res.redirect('/dashboard');
@@ -879,12 +904,28 @@ bot.on('voiceStateUpdate', async (oldState, newState) => {
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'aki-discord-control', time: new Date().toISOString(), bot: bot.isReady() }));
 app.get('/health', (_req, res) => res.status(200).send('OK'));
 
-app.get('/api/me', (req, res) => {
+app.get('/api/me', async (req, res) => {
   const s = getSession(req);
   if (!s) return res.json({ authenticated: false });
+  const accessToken = await getDiscordAccessTokenForSession(s).catch(error => {
+    console.warn('Discord OAuth guild refresh token unavailable:', error.message);
+    return null;
+  });
+  if (accessToken) {
+    try { s.guilds = await discordApi('/users/@me/guilds', accessToken); }
+    catch (error) { console.warn('Discord guild list refresh failed:', error.message); }
+  }
+  const userGuilds = s.guilds || [];
   const botGuildIds = new Set(bot.guilds.cache.keys());
-  const guilds = (s.guilds || []).filter(g => botGuildIds.has(g.id)).map(g => ({ id: g.id, name: g.name, icon: g.icon, owner: Boolean(g.owner), permissions: g.permissions, manageable: Boolean(g.owner) || (BigInt(g.permissions || '0') & (8n | 32n)) !== 0n }));
-  res.json({ authenticated: true, user: s.user, guilds, bot: { ready: bot.isReady(), tag: bot.user?.tag || null, guilds: bot.guilds.cache.size, ping: Math.round(bot.ws.ping) } });
+  const guilds = userGuilds.filter(g => botGuildIds.has(g.id)).map(g => ({
+    id: g.id, name: g.name, icon: g.icon, owner: Boolean(g.owner), permissions: g.permissions,
+    manageable: Boolean(g.owner) || (BigInt(g.permissions || '0') & (8n | 32n)) !== 0n
+  }));
+  res.json({
+    authenticated: true, user: s.user, guilds,
+    guildDiagnostics: { discordGuildCount: userGuilds.length, botGuildCount: bot.guilds.cache.size, sharedGuildCount: guilds.length, botReady: bot.isReady() },
+    bot: { ready: bot.isReady(), tag: bot.user?.tag || null, guilds: bot.guilds.cache.size, ping: Math.round(bot.ws.ping) }
+  });
 });
 app.get('/api/activity', requireAuth, async (req, res) => {
   const allowed = new Set((req.session.guilds || []).map(g => g.id));
