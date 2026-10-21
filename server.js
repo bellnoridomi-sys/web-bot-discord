@@ -1221,7 +1221,7 @@ bot.on('voiceStateUpdate', async (oldState, newState) => {
   }
 });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'aki-discord-control', time: new Date().toISOString(), bot: bot.isReady() }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'aki-discord-control', time: new Date().toISOString(), bot: bot.isReady(), sessionPersistence: Boolean(pool) }));
 app.get('/health', (_req, res) => res.status(200).send('OK'));
 
 app.get('/api/me', async (req, res) => {
@@ -1656,6 +1656,7 @@ setInterval(reminderTick, 10_000);
 async function boot() {
   await initDb();
   await restorePersistentSessions();
+  if (!pool) console.warn('DATABASE_URL missing. Login sessions will not survive Render restarts; configure a Render PostgreSQL DATABASE_URL.');
   server.listen(PORT, '0.0.0.0', () => console.log(`Aki Dev dashboard listening on 0.0.0.0:${PORT}`));
   if (process.env.DISCORD_TOKEN) {
     bot.login(process.env.DISCORD_TOKEN).catch(error => console.error('Discord login failed:', error.message));
