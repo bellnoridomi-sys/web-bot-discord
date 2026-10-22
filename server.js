@@ -783,6 +783,12 @@ const commands = [
   new SlashCommandBuilder().setName('userinfo').setDescription('Thông tin một thành viên.').addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(false)),
   new SlashCommandBuilder().setName('avatar').setDescription('Xem avatar.').addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(false)),
   new SlashCommandBuilder().setName('botinfo').setDescription('Thông tin bot.'),
+  new SlashCommandBuilder().setName('rank').setDescription('Xem cấp độ và XP của thành viên.').addUserOption(o => o.setName('user').setDescription('Thành viên (mặc định là bạn)').setRequired(false)),
+  new SlashCommandBuilder().setName('balance').setDescription('Xem số dư xu của thành viên.').addUserOption(o => o.setName('user').setDescription('Thành viên (mặc định là bạn)').setRequired(false)),
+  new SlashCommandBuilder().setName('daily').setDescription('Nhận 100 xu mỗi 24 giờ.'),
+  new SlashCommandBuilder().setName('work').setDescription('Làm việc nhận xu, hồi sau 1 giờ.'),
+  new SlashCommandBuilder().setName('leaderboard').setDescription('Top 10 level hoặc số xu của server.')
+    .addStringOption(o => o.setName('type').setDescription('Bảng xếp hạng').addChoices({ name: 'Levels / XP', value: 'levels' }, { name: 'Coins / Xu', value: 'coins' }).setRequired(false)),
   new SlashCommandBuilder().setName('poll').setDescription('Tạo poll 2–4 lựa chọn.')
     .addStringOption(o => o.setName('question').setDescription('Câu hỏi').setRequired(true))
     .addStringOption(o => o.setName('option1').setDescription('Lựa chọn 1').setRequired(true))
@@ -814,7 +820,7 @@ const commands = [
 ].map(c => c.toJSON());
 
 const helpLines = [
-  ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'],
+  ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Nhắc việc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
   ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['timeout', 'Timeout'], ['role', 'Quản lý role'],
@@ -1152,6 +1158,47 @@ async function runCommand(name, ctx) {
     }
     case 'botinfo':
       return embedPayload(new EmbedBuilder().setTitle('◈ Aki Dev Bot Core').setDescription('Monochrome Discord control system.').addFields({ name: 'Servers', value: `${bot.guilds.cache.size}`, inline: true }, { name: 'Commands', value: `${commands.length}`, inline: true }, { name: 'Latency', value: `${Math.round(bot.ws.ping)}ms`, inline: true }).setTimestamp());
+    case 'rank': {
+      const member = target || user;
+      if (!member) throw new Error('Không tìm thấy thành viên.');
+      const profile = await ensureCommunityProfile(guild.id, member.id);
+      const xp = Number(profile.xp) || 0;
+      const level = Math.floor(xp / 100);
+      const progress = xp % 100;
+      const need = 100;
+      return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle('✨ Rank · ' + (member.user.globalName || member.user.username))
+        .setThumbnail(member.user.displayAvatarURL({ size: 128 }))
+        .setDescription('**Level ' + level + '** · ' + xp + ' XP tổng\\n`' + progressBar(progress, need) + '` ' + progress + '/100 XP tới level tiếp theo')
+        .setFooter({ text: 'Aki Community · XP cooldown 60 giây/tin nhắn' }).setTimestamp());
+    }
+    case 'balance': {
+      const member = target || user;
+      if (!member) throw new Error('Không tìm thấy thành viên.');
+      const profile = await ensureCommunityProfile(guild.id, member.id);
+      return embedPayload(new EmbedBuilder().setColor(0xFEE75C).setTitle('🪙 Ví xu · ' + (member.user.globalName || member.user.username))
+        .setDescription('**' + (Number(profile.coins) || 0).toLocaleString('en-US') + ' xu**')
+        .setFooter({ text: 'Xu ảo trong server · không có giá trị tiền thật' }).setTimestamp());
+    }
+    case 'daily': {
+      const result = await claimCommunityCoins(guild.id, userId, 'daily');
+      if (!result.ok) return reply('⏳ Bạn đã nhận daily rồi. Nhận lại ' + `<t:${Math.ceil(result.nextAt / 1000)}:R>` + '.');
+      return reply('🌞 Bạn nhận được **+' + result.reward + ' xu**! Số dư: **' + result.coins.toLocaleString('en-US') + ' xu**.');
+    }
+    case 'work': {
+      const result = await claimCommunityCoins(guild.id, userId, 'work');
+      if (!result.ok) return reply('🛠️ Bạn vừa làm việc rồi. Có thể làm tiếp ' + `<t:${Math.ceil(result.nextAt / 1000)}:R>` + '.');
+      return reply('🛠️ Hoàn thành công việc và nhận **+' + result.reward + ' xu**! Số dư: **' + result.coins.toLocaleString('en-US') + ' xu**.');
+    }
+    case 'leaderboard': {
+      const kind = args.kind === 'coins' ? 'coins' : 'levels';
+      const rows = await getCommunityLeaderboard(guild.id, kind, 10);
+      const body = rows.length ? rows.map(row => kind === 'coins'
+        ? '`#' + row.rank + '` <@' + row.user_id + '> · **' + Number(row.coins).toLocaleString('en-US') + ' xu**'
+        : '`#' + row.rank + '` <@' + row.user_id + '> · **Level ' + row.level + '** (' + Number(row.xp).toLocaleString('en-US') + ' XP)'
+      ).join('\\n') : 'Chưa có dữ liệu. Hãy trò chuyện hoặc dùng /daily để bắt đầu.';
+      return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle(kind === 'coins' ? '🏆 Top xu server' : '🏆 Top level server')
+        .setDescription(body).setFooter({ text: 'Aki Community · cập nhật trực tiếp từ profile' }).setTimestamp());
+    }
     case 'poll': {
       const opts = [args.option1, args.option2, args.option3, args.option4].filter(Boolean);
       const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
@@ -1312,12 +1359,13 @@ async function runCommand(name, ctx) {
 function extractInteractionArgs(interaction) {
   const getUserId = () => interaction.options.getUser('user')?.id;
   const out = {};
-  if (['userinfo', 'avatar', 'warnings', 'legit'].includes(interaction.commandName)) out.user = getUserId();
+  if (['userinfo', 'avatar', 'warnings', 'legit', 'rank', 'balance'].includes(interaction.commandName)) out.user = getUserId();
   if (['ticket-setup', 'role-panel'].includes(interaction.commandName)) out.channel = interaction.options.getChannel('channel')?.id || undefined;
   if (['warn', 'kick', 'ban', 'timeout'].includes(interaction.commandName)) { out.user = getUserId(); }
   if (interaction.commandName === 'warn' || interaction.commandName === 'kick' || interaction.commandName === 'ban' || interaction.commandName === 'timeout') out.reason = interaction.options.getString('reason');
   if (interaction.commandName === 'timeout') out.minutes = interaction.options.getInteger('minutes');
   if (interaction.commandName === 'poll') for (const k of ['question','option1','option2','option3','option4']) out[k] = interaction.options.getString(k) || undefined;
+  if (interaction.commandName === 'leaderboard') out.kind = interaction.options.getString('type') || 'levels';
   if (interaction.commandName === '8ball') out.question = interaction.options.getString('question');
   if (interaction.commandName === 'roll') out.sides = interaction.options.getInteger('sides');
   if (interaction.commandName === 'remind') { out.seconds = interaction.options.getInteger('seconds'); out.text = interaction.options.getString('text'); }
@@ -1484,6 +1532,18 @@ bot.on('messageCreate', async message => {
     }
     const cfg = await getConfig(message.guild.id);
     const prefix = cfg.prefix || '!';
+    if (!message.content.startsWith(prefix) && message.content.trim().length >= 4) {
+      try {
+        const gain = XP_PER_MESSAGE_MIN + Math.floor(Math.random() * (XP_PER_MESSAGE_MAX - XP_PER_MESSAGE_MIN + 1));
+        const profile = await awardCommunityXp(message.guild.id, message.author.id, gain);
+        if (profile && Math.floor((profile.xp - profile.gain) / 100) < profile.level) {
+          await message.channel.send('🎉 <@' + message.author.id + '> lên **Level ' + profile.level + '**! Dùng `/rank` để xem tiến độ.').catch(() => {});
+          await addActivity(message.guild.id, message.author.id, 'level:up', '🎉 Đạt Level ' + profile.level + ' với ' + profile.xp + ' XP.').catch(() => {});
+        }
+      } catch (error) {
+        void reportRuntimeError(error, 'community-xp', message.guild.id);
+      }
+    }
     if (!message.content.startsWith(prefix)) return;
     const [name, ...parts] = message.content.slice(prefix.length).trim().split(/\s+/);
     if (!name || !commands.some(c => c.name === name)) return;
@@ -1491,8 +1551,14 @@ bot.on('messageCreate', async message => {
       ping: {}, help: {}, server: {}, botinfo: {}, coinflip: {},
       '8ball': { question: parts.join(' ') }, roll: { sides: Number(parts[0]) || 6 }, remind: { seconds: Number(parts[0]), text: parts.slice(1).join(' ') },
       announce: { message: parts.join(' ') }, clear: { amount: Number(parts[0]) }, slowmode: { seconds: Number(parts[0]) }, lock: {}, unlock: {},
+      rank: {}, balance: {}, daily: {}, work: {}, leaderboard: { kind: parts[0] === 'coins' ? 'coins' : 'levels' },
       'vc-leave': {}
     };
+    if (['rank', 'balance'].includes(name)) {
+      const userMention = message.mentions.users.first();
+      const rawId = parts.find(part => /^\\d{17,20}$/.test(part));
+      if (userMention || rawId) basicMap[name].user = userMention?.id || rawId;
+    }
     if (name === 'afk') {
       const urlPart = parts.find(part => /^https?:\/\//i.test(part));
       const reason = parts.filter(part => part !== urlPart).join(' ').trim();
