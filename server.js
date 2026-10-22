@@ -954,13 +954,13 @@ async function ensureNamedRole(guild, name, color = 0x99AAB5, permissions = []) 
 function buildReactionRoleButtonRows() {
   const buttons = REACTION_ROLE_CHOICES.map(choice => new ButtonBuilder()
     .setCustomId('aki:rr:' + choice.key)
-    .setLabel(choice.emoji + ' ' + choice.name.replace(/^\\p{Extended_Pictographic}\\s*/u, '').slice(0, 70))
+    .setLabel(choice.name.slice(0, 80))
     .setStyle(ButtonStyle.Secondary));
   return [new ActionRowBuilder().addComponents(...buttons.slice(0, 5))];
 }
 
 function normalizeReactionEmoji(value) {
-  return String(value || '').normalize('NFC').replace(/\\uFE0F/g, '');
+  return String(value || '').normalize('NFC').replace(/\uFE0F/g, '');
 }
 
 function buildSelfRoleRows() {
