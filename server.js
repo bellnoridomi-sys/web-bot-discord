@@ -1338,7 +1338,7 @@ bot.on('messageCreate', async message => {
     try {
       const match = message.content.trim().match(/^\+legit(?:\s+\+?\s*(?:<@!?(\d{17,20})>|@?(\d{17,20})))?\s*$/i);
       if (!match) {
-        await message.reply('Use +legit or +legit @1393847310949290026.').catch(() => {});
+        await message.reply('Dùng `+legit` hoặc `+legit + @1393847310949290026`.').catch(() => {});
         return;
       }
       const targetId = match[1] || match[2] || null;
@@ -1355,7 +1355,11 @@ bot.on('messageCreate', async message => {
       }
       if (targetId) {
         const targetMember = await message.guild.members.fetch(targetId).catch(() => null);
-        if (!targetMember) throw new Error('The configured account is not a member of this server.');
+        if (!targetMember) throw new Error('Tài khoản được cấu hình chưa ở trong server này.');
+      }
+      const botMember = message.guild.members.me || await message.guild.members.fetchMe();
+      if (!message.channel?.permissionsFor(botMember)?.has(PermissionFlagsBits.AddReactions)) {
+        throw new Error('Bot đang thiếu quyền Add Reactions trong kênh này.');
       }
       await message.react('✅');
       await addActivity(message.guild.id, message.author.id, '+legit:reaction', '✅ Reacted to +legit command in #' + message.channel.name + '.');
