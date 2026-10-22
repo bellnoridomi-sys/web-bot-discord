@@ -7,6 +7,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import { normalizeReactionEmoji, parseReactionRoleBindingFromMessage } from './lib/role-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
 import {
@@ -53,12 +54,15 @@ app.use(rateLimit({ windowMs: 60_000, limit: 160, standardHeaders: true, legacyH
 const sessionStore = new Map();
 const oauthStateStore = new Map();
 const activityCache = [];
+const xpCooldowns = new Map();
+const runtimeErrorCooldowns = new Map();
 const memory = {
   configs: new Map(),
   warnings: new Map(),
   afk: new Map(),
   reactionRolePanels: new Map(),
-  reactionRoleBindings: new Map()
+  reactionRoleBindings: new Map(),
+  communityProfiles: new Map()
 };
 
 const pool = process.env.DATABASE_URL
@@ -88,6 +92,8 @@ async function initDb() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS auto_role_id TEXT;
+    ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS welcome_channel_id TEXT;
+    ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS goodbye_channel_id TEXT;
     CREATE TABLE IF NOT EXISTS warnings (
       id BIGSERIAL PRIMARY KEY,
       guild_id TEXT NOT NULL,
@@ -120,6 +126,19 @@ async function initDb() {
       PRIMARY KEY(guild_id, message_id, emoji)
     );
     CREATE INDEX IF NOT EXISTS reaction_role_bindings_message_idx ON reaction_role_bindings(guild_id, message_id);
+    CREATE TABLE IF NOT EXISTS community_profiles (
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      xp BIGINT NOT NULL DEFAULT 0,
+      level INTEGER NOT NULL DEFAULT 0,
+      coins BIGINT NOT NULL DEFAULT 0,
+      last_daily BIGINT NOT NULL DEFAULT 0,
+      last_work BIGINT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (guild_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS community_profiles_coins_idx ON community_profiles(guild_id, coins DESC);
+    CREATE INDEX IF NOT EXISTS community_profiles_xp_idx ON community_profiles(guild_id, xp DESC);
     CREATE TABLE IF NOT EXISTS reminders (
       id BIGSERIAL PRIMARY KEY,
       guild_id TEXT NOT NULL,
@@ -166,7 +185,9 @@ async function getConfig(guildId) {
     auto_voice_channel_id: null,
     prefix: '!',
     log_channel_id: null,
-    auto_role_id: null
+    auto_role_id: null,
+    welcome_channel_id: null,
+    goodbye_channel_id: null
   });
   return memory.configs.get(guildId);
 }
@@ -176,16 +197,18 @@ async function setConfig(guildId, patch) {
   const next = { ...current, ...patch };
   if (pool) {
     await dbQuery(`
-      INSERT INTO guild_configs(guild_id, auto_voice_enabled, auto_voice_channel_id, prefix, log_channel_id, auto_role_id, updated_at)
-      VALUES($1,$2,$3,$4,$5,$6,NOW())
+      INSERT INTO guild_configs(guild_id, auto_voice_enabled, auto_voice_channel_id, prefix, log_channel_id, auto_role_id, welcome_channel_id, goodbye_channel_id, updated_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW())
       ON CONFLICT(guild_id) DO UPDATE SET
         auto_voice_enabled=EXCLUDED.auto_voice_enabled,
         auto_voice_channel_id=EXCLUDED.auto_voice_channel_id,
         prefix=EXCLUDED.prefix,
         log_channel_id=EXCLUDED.log_channel_id,
         auto_role_id=EXCLUDED.auto_role_id,
+        welcome_channel_id=EXCLUDED.welcome_channel_id,
+        goodbye_channel_id=EXCLUDED.goodbye_channel_id,
         updated_at=NOW()
-    `, [guildId, Boolean(next.auto_voice_enabled), next.auto_voice_channel_id || null, next.prefix || '!', next.log_channel_id || null, next.auto_role_id || null]);
+    `, [guildId, Boolean(next.auto_voice_enabled), next.auto_voice_channel_id || null, next.prefix || '!', next.log_channel_id || null, next.auto_role_id || null, next.welcome_channel_id || null, next.goodbye_channel_id || null]);
   } else memory.configs.set(guildId, next);
   return next;
 }
@@ -216,6 +239,41 @@ async function sendActivityToDiscord(row) {
     .addFields({ name: 'Actor ID', value: String(row.user_id || 'System').slice(0, 100), inline: true }, { name: 'Source', value: String(row.action || 'event').startsWith('web:') ? 'Web dashboard' : 'Discord / Bot', inline: true })
     .setTimestamp(new Date(row.created_at));
   await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+}
+
+
+async function reportRuntimeError(error, source = 'runtime', guildId = null) {
+  const text = String(error?.stack || error?.message || error || 'Unknown runtime error').slice(0, 3500);
+  const message = String(error?.message || error || 'Unknown runtime error').slice(0, 500);
+  console.error('[runtime-error]', source, guildId || 'global', text);
+  const key = `${source}:${guildId || 'global'}:${message}`;
+  const now = Date.now();
+  if (now - (runtimeErrorCooldowns.get(key) || 0) < 30_000) return;
+  runtimeErrorCooldowns.set(key, now);
+  if (!bot.isReady()) return;
+  const guilds = guildId
+    ? [bot.guilds.cache.get(guildId)].filter(Boolean)
+    : [...bot.guilds.cache.values()].slice(0, 25);
+  for (const guild of guilds) {
+    try {
+      const config = await getConfig(guild.id).catch(() => null);
+      if (!config?.log_channel_id) continue;
+      const channel = await guild.channels.fetch(config.log_channel_id).catch(() => null);
+      if (!channel?.isTextBased?.() || channel.guild?.id !== guild.id) continue;
+      const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+      const permissions = me ? channel.permissionsFor(me) : null;
+      if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) continue;
+      const embed = new EmbedBuilder()
+        .setColor(0xED4245)
+        .setTitle('🚨 Aki Runtime Error · ' + String(source).slice(0, 180))
+        .setDescription('```text\\n' + text.replace(/```/g, '\`\u200b\`\u200b\`').slice(0, 3800) + '\\n```')
+        .addFields({ name: 'Server', value: guild.name.slice(0, 100), inline: true }, { name: 'Time', value: `<t:${Math.floor(now / 1000)}:F>`, inline: true })
+        .setFooter({ text: 'Automatic diagnostic log · do not share tokens/secrets' });
+      await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+    } catch (logError) {
+      console.warn('Could not deliver runtime error log:', logError?.message || logError);
+    }
+  }
 }
 
 async function addWarning(guildId, userId, moderatorId, reason) {
@@ -299,6 +357,90 @@ async function reminderTick() {
       console.error('Reminder delivery failed:', error.message);
     }
   }
+}
+
+const XP_COOLDOWN_MS = 60_000;
+const XP_PER_MESSAGE_MIN = 8;
+const XP_PER_MESSAGE_MAX = 14;
+const COINS_DAILY_AMOUNT = 100;
+const COINS_WORK_MIN = 15;
+const COINS_WORK_MAX = 60;
+const DAILY_COOLDOWN_MS = 24 * 60 * 60_000;
+const WORK_COOLDOWN_MS = 60 * 60_000;
+
+async function ensureCommunityProfile(guildId, userId) {
+  if (pool) {
+    await dbQuery('INSERT INTO community_profiles(guild_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [guildId, userId]);
+    const result = await dbQuery('SELECT guild_id,user_id,xp,level,coins,last_daily,last_work FROM community_profiles WHERE guild_id=$1 AND user_id=$2', [guildId, userId]);
+    return result.rows[0];
+  }
+  const key = `${guildId}:${userId}`;
+  if (!memory.communityProfiles.has(key)) memory.communityProfiles.set(key, { guild_id: guildId, user_id: userId, xp: 0, level: 0, coins: 0, last_daily: 0, last_work: 0 });
+  return memory.communityProfiles.get(key);
+}
+
+async function awardCommunityXp(guildId, userId, amount) {
+  const key = `${guildId}:${userId}`;
+  const now = Date.now();
+  const last = xpCooldowns.get(key) || 0;
+  if (now - last < XP_COOLDOWN_MS) return null;
+  xpCooldowns.set(key, now);
+  const gain = Math.max(1, Math.min(100, Math.floor(Number(amount) || 0)));
+  if (pool) {
+    const result = await dbQuery(`
+      INSERT INTO community_profiles(guild_id,user_id,xp,level,coins,last_daily,last_work)
+      VALUES($1,$2,$3,0,0,0,0)
+      ON CONFLICT(guild_id,user_id) DO UPDATE SET
+        xp=community_profiles.xp + EXCLUDED.xp,
+        level=FLOOR((community_profiles.xp + EXCLUDED.xp) / 100.0)::INTEGER,
+        updated_at=NOW()
+      RETURNING xp,level
+    `, [guildId, userId, gain]);
+    return { gain, xp: Number(result.rows[0].xp), level: Number(result.rows[0].level) };
+  }
+  const profile = await ensureCommunityProfile(guildId, userId);
+  const oldLevel = Number(profile.level) || 0;
+  profile.xp = (Number(profile.xp) || 0) + gain;
+  profile.level = Math.floor(profile.xp / 100);
+  return { gain, xp: profile.xp, level: profile.level, oldLevel };
+}
+
+async function claimCommunityCoins(guildId, userId, type) {
+  const isDaily = type === 'daily';
+  const now = Date.now();
+  const cooldown = isDaily ? DAILY_COOLDOWN_MS : WORK_COOLDOWN_MS;
+  const column = isDaily ? 'last_daily' : 'last_work';
+  const reward = isDaily ? COINS_DAILY_AMOUNT : COINS_WORK_MIN + Math.floor(Math.random() * (COINS_WORK_MAX - COINS_WORK_MIN + 1));
+  await ensureCommunityProfile(guildId, userId);
+  if (pool) {
+    const result = await dbQuery(`UPDATE community_profiles SET coins=coins+$1, ${column}=$2, updated_at=NOW() WHERE guild_id=$3 AND user_id=$4 AND ${column} <= $5 RETURNING coins`, [reward, now, guildId, userId, now - cooldown]);
+    if (result.rowCount) return { ok: true, reward, coins: Number(result.rows[0].coins), nextAt: now + cooldown };
+    const profile = await ensureCommunityProfile(guildId, userId);
+    return { ok: false, coins: Number(profile.coins), nextAt: Number(profile[column]) + cooldown };
+  }
+  const profile = await ensureCommunityProfile(guildId, userId);
+  if (now - Number(profile[column] || 0) < cooldown) return { ok: false, coins: Number(profile.coins), nextAt: Number(profile[column]) + cooldown };
+  profile.coins = Number(profile.coins || 0) + reward;
+  profile[column] = now;
+  return { ok: true, reward, coins: profile.coins, nextAt: now + cooldown };
+}
+
+function progressBar(current, total, length = 12) {
+  const ratio = total > 0 ? Math.max(0, Math.min(1, current / total)) : 0;
+  const filled = Math.round(ratio * length);
+  return '█'.repeat(filled) + '░'.repeat(Math.max(0, length - filled));
+}
+
+async function getCommunityLeaderboard(guildId, kind = 'levels', limit = 10) {
+  const safeLimit = Math.max(1, Math.min(10, Number(limit) || 10));
+  if (pool) {
+    const column = kind === 'coins' ? 'coins' : 'xp';
+    const result = await dbQuery(`SELECT user_id,xp,level,coins FROM community_profiles WHERE guild_id=$1 ORDER BY ${column} DESC, user_id ASC LIMIT $2`, [guildId, safeLimit]);
+    return result.rows.map((row, index) => ({ rank: index + 1, user_id: row.user_id, xp: Number(row.xp), level: Number(row.level), coins: Number(row.coins) }));
+  }
+  return [...memory.communityProfiles.values()].filter(p => p.guild_id === guildId)
+    .sort((a,b) => (kind === 'coins' ? Number(b.coins)-Number(a.coins) : Number(b.xp)-Number(a.xp)))
+    .slice(0, safeLimit).map((p,index) => ({ ...p, rank:index+1 }));
 }
 
 function makeSession(user, guilds) {
@@ -683,6 +825,12 @@ const commands = [
   new SlashCommandBuilder().setName('userinfo').setDescription('Thông tin một thành viên.').addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(false)),
   new SlashCommandBuilder().setName('avatar').setDescription('Xem avatar.').addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(false)),
   new SlashCommandBuilder().setName('botinfo').setDescription('Thông tin bot.'),
+  new SlashCommandBuilder().setName('rank').setDescription('Xem cấp độ và XP của thành viên.').addUserOption(o => o.setName('user').setDescription('Thành viên (mặc định là bạn)').setRequired(false)),
+  new SlashCommandBuilder().setName('balance').setDescription('Xem số dư xu của thành viên.').addUserOption(o => o.setName('user').setDescription('Thành viên (mặc định là bạn)').setRequired(false)),
+  new SlashCommandBuilder().setName('daily').setDescription('Nhận 100 xu mỗi 24 giờ.'),
+  new SlashCommandBuilder().setName('work').setDescription('Làm việc nhận xu, hồi sau 1 giờ.'),
+  new SlashCommandBuilder().setName('leaderboard').setDescription('Top 10 level hoặc số xu của server.')
+    .addStringOption(o => o.setName('type').setDescription('Bảng xếp hạng').addChoices({ name: 'Levels / XP', value: 'levels' }, { name: 'Coins / Xu', value: 'coins' }).setRequired(false)),
   new SlashCommandBuilder().setName('poll').setDescription('Tạo poll 2–4 lựa chọn.')
     .addStringOption(o => o.setName('question').setDescription('Câu hỏi').setRequired(true))
     .addStringOption(o => o.setName('option1').setDescription('Lựa chọn 1').setRequired(true))
@@ -710,15 +858,17 @@ const commands = [
   new SlashCommandBuilder().setName('announce').setDescription('Đăng thông báo đẹp.').setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages.toString()).addStringOption(o => o.setName('message').setDescription('Nội dung').setRequired(true)),
   new SlashCommandBuilder().setName('vc-join').setDescription('Bot vào voice.').setDefaultMemberPermissions(PermissionFlagsBits.Connect.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh voice').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(true)),
   new SlashCommandBuilder().setName('vc-leave').setDescription('Bot rời voice.').setDefaultMemberPermissions(PermissionFlagsBits.Connect.toString()),
-  new SlashCommandBuilder().setName('auto-voice').setDescription('Bật/tắt tự động giữ voice.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addBooleanOption(o => o.setName('enabled').setDescription('Bật hoặc tắt').setRequired(true)).addChannelOption(o => o.setName('channel').setDescription('Kênh voice').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(false))
+  new SlashCommandBuilder().setName('auto-voice').setDescription('Bật/tắt tự động giữ voice.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addBooleanOption(o => o.setName('enabled').setDescription('Bật hoặc tắt').setRequired(true)).addChannelOption(o => o.setName('channel').setDescription('Kênh voice').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(false)),
+  new SlashCommandBuilder().setName('welcome-setup').setDescription('Chọn kênh chào thành viên mới.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh chào mừng').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true)),
+  new SlashCommandBuilder().setName('goodbye-setup').setDescription('Chọn kênh thông báo thành viên rời server.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh tạm biệt').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
 ].map(c => c.toJSON());
 
 const helpLines = [
-  ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'],
+  ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Nhắc việc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
   ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['timeout', 'Timeout'], ['role', 'Quản lý role'],
-  ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice']
+  ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
 const magic8 = [
@@ -789,11 +939,11 @@ const SELF_ASSIGNABLE_ROLES = [
 ];
 
 const REACTION_ROLE_CHOICES = [
-  { emoji: '📣', name: '📣 Announcement Ping', color: 0x5865F2, description: 'Thông báo quan trọng của server' },
-  { emoji: '🎉', name: '🔔 Event Ping', color: 0x57F287, description: 'Sự kiện và hoạt động cộng đồng' },
-  { emoji: '🎁', name: '🎁 Giveaway Ping', color: 0xEB459E, description: 'Quà tặng và giveaway' },
-  { emoji: '🎮', name: '🎮 Game Ping', color: 0xFEE75C, description: 'Tìm team và hẹn giờ chơi game' },
-  { emoji: '💬', name: '💬 Social Ping', color: 0x99AAB5, description: 'Hoạt động giao lưu cộng đồng' }
+  { key: 'announcements', emoji: '📣', name: '📣 Announcement Ping', color: 0x5865F2, description: 'Thông báo quan trọng của server' },
+  { key: 'events', emoji: '🎉', name: '🔔 Event Ping', color: 0x57F287, description: 'Sự kiện và hoạt động cộng đồng' },
+  { key: 'giveaways', emoji: '🎁', name: '🎁 Giveaway Ping', color: 0xEB459E, description: 'Quà tặng và giveaway' },
+  { key: 'gaming', emoji: '🎮', name: '🎮 Game Ping', color: 0xFEE75C, description: 'Tìm team và hẹn giờ chơi game' },
+  { key: 'social', emoji: '💬', name: '💬 Social Ping', color: 0x99AAB5, description: 'Hoạt động giao lưu cộng đồng' }
 ];
 
 async function ensureNamedRole(guild, name, color = 0x99AAB5, permissions = []) {
@@ -801,6 +951,15 @@ async function ensureNamedRole(guild, name, color = 0x99AAB5, permissions = []) 
   if (!role) role = await guild.roles.create({ name, color, permissions, reason: 'Aki automation setup' });
   return role;
 }
+
+function buildReactionRoleButtonRows() {
+  const buttons = REACTION_ROLE_CHOICES.map(choice => new ButtonBuilder()
+    .setCustomId('aki:rr:' + choice.key)
+    .setLabel(choice.name.slice(0, 80))
+    .setStyle(ButtonStyle.Secondary));
+  return [new ActionRowBuilder().addComponents(...buttons.slice(0, 5))];
+}
+
 
 function buildSelfRoleRows() {
   const buttons = SELF_ASSIGNABLE_ROLES.map(role => new ButtonBuilder().setCustomId('aki:role:' + role.key).setLabel(role.name).setStyle(ButtonStyle.Secondary));
@@ -828,7 +987,7 @@ async function saveReactionRolePanel(guildId, channelId, messageId, bindings) {
       for (const binding of bindings) {
         await client.query(
           'INSERT INTO reaction_role_bindings(guild_id,message_id,emoji,role_id) VALUES($1,$2,$3,$4) ON CONFLICT(guild_id,message_id,emoji) DO UPDATE SET role_id=EXCLUDED.role_id',
-          [guildId, messageId, binding.emoji, binding.roleId]
+          [guildId, messageId, normalizeReactionEmoji(binding.emoji), binding.roleId]
         );
       }
       await client.query('COMMIT');
@@ -846,7 +1005,7 @@ async function saveReactionRolePanel(guildId, channelId, messageId, bindings) {
   memory.reactionRolePanels.set(guildId, { guild_id: guildId, channel_id: channelId, message_id: messageId });
   for (const binding of bindings) {
     memory.reactionRoleBindings.set(`${guildId}:${messageId}:${binding.emoji}`, {
-      guildId, messageId, emoji: binding.emoji, role_id: binding.roleId
+      guildId, messageId, emoji: normalizeReactionEmoji(binding.emoji), role_id: binding.roleId
     });
   }
 }
@@ -854,22 +1013,13 @@ async function getReactionRoleBinding(guildId, messageId, emoji) {
   if (pool) {
     const result = await dbQuery(
       'SELECT role_id FROM reaction_role_bindings WHERE guild_id=$1 AND message_id=$2 AND emoji=$3',
-      [guildId, messageId, emoji]
+      [guildId, messageId, normalizeReactionEmoji(emoji)]
     );
     return result?.rows?.[0] || null;
   }
   return memory.reactionRoleBindings.get(`${guildId}:${messageId}:${emoji}`) || null;
 }
 
-function parseReactionRoleBindingFromMessage(message, emoji) {
-  // Only trust a panel authored by this bot; do not honor look-alike user/webhook embeds.
-  if (!message?.author?.id || message.author.id !== bot.user?.id) return null;
-  const embed = message?.embeds?.find(item => String(item.footer?.text || '').includes('Reaction Roles'));
-  if (!embed?.description) return null;
-  const line = embed.description.split('\n').find(item => item.trimStart().startsWith(emoji));
-  const roleId = line?.match(/<@&(\d{17,20})>/)?.[1];
-  return roleId ? { role_id: roleId } : null;
-}
 
 async function setupRolePanel(guild, channel, actorId) {
   if (!channel?.isTextBased?.() || channel.guild?.id !== guild.id || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) {
@@ -907,13 +1057,13 @@ async function setupRolePanel(guild, channel, actorId) {
     .setColor(0x5865F2)
     .setTitle('🎭 Chọn role ping của bạn')
     .setDescription([
-      'Chạm vào emoji tương ứng để **nhận role**; gỡ reaction để **gỡ role**.',
+      'Thêm reaction emoji hoặc nhấn nút emoji tương ứng để **nhận/gỡ role**.',
       '👥 Muốn tự gán Member cho người mới, hãy chọn 👥 Member trong mục Auto-role trên dashboard.',
       '',
       ...roles.map(choice => `${choice.emoji} **${choice.name}** — ${choice.description} (<@&${choice.role.id}>)`)
     ].join('\n'))
     .setFooter({ text: 'Aki Dev · Reaction Roles' });
-  const message = await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+  const message = await channel.send({ embeds: [embed], components: buildReactionRoleButtonRows(), allowedMentions: { parse: [] } });
   const bindings = roles.map(choice => ({ emoji: choice.emoji, roleId: choice.role.id }));
   try {
     // Finish the visible panel before switching the stored mapping; don't strand users on a partial panel.
@@ -976,6 +1126,30 @@ async function handleAkiButton(interaction) {
   const customId = interaction.customId || '';
   if (!customId.startsWith('aki:') || !interaction.guild) return false;
   const guild = interaction.guild;
+  if (customId.startsWith('aki:rr:')) {
+    await interaction.deferReply({ ephemeral: true });
+    const key = customId.slice('aki:rr:'.length);
+    const spec = REACTION_ROLE_CHOICES.find(item => item.key === key);
+    if (!spec) { await interaction.editReply({ content: 'Role không hợp lệ.' }); return true; }
+    const member = await guild.members.fetch(interaction.user.id);
+    const roles = await guild.roles.fetch().catch(() => guild.roles.cache);
+    const role = roles.find(r => r.name === spec.name);
+    if (!role) { await interaction.editReply({ content: 'Role chưa tồn tại. Hãy đăng lại bảng nhận role từ dashboard.' }); return true; }
+    const me = guild.members.me || await guild.members.fetchMe();
+    if (!me.permissions.has(PermissionFlagsBits.ManageRoles)) { await interaction.editReply({ content: 'Bot thiếu quyền Manage Roles.' }); return true; }
+    if (role.position >= me.roles.highest.position) { await interaction.editReply({ content: 'Role ' + role.name + ' đang ở trên hoặc ngang role bot. Hãy đưa role bot lên cao hơn.' }); return true; }
+    const hadRole = member.roles.cache.has(role.id);
+    if (hadRole) {
+      await member.roles.remove(role, 'Reaction-role button removed');
+      await interaction.editReply({ content: '➖ Đã gỡ role ' + role.name + '.' });
+      await addActivity(guild.id, member.id, 'role:button-remove', role.name + ' · nút emoji').catch(() => {});
+    } else {
+      await member.roles.add(role, 'Reaction-role button selected');
+      await interaction.editReply({ content: '✅ Đã nhận role ' + role.name + '.' });
+      await addActivity(guild.id, member.id, 'role:button-add', role.name + ' · nút emoji').catch(() => {});
+    }
+    return true;
+  }
   if (customId.startsWith('aki:role:')) {
     const key = customId.slice('aki:role:'.length);
     const spec = SELF_ASSIGNABLE_ROLES.find(r => r.key === key);
@@ -1052,6 +1226,47 @@ async function runCommand(name, ctx) {
     }
     case 'botinfo':
       return embedPayload(new EmbedBuilder().setTitle('◈ Aki Dev Bot Core').setDescription('Monochrome Discord control system.').addFields({ name: 'Servers', value: `${bot.guilds.cache.size}`, inline: true }, { name: 'Commands', value: `${commands.length}`, inline: true }, { name: 'Latency', value: `${Math.round(bot.ws.ping)}ms`, inline: true }).setTimestamp());
+    case 'rank': {
+      const member = target || user;
+      if (!member) throw new Error('Không tìm thấy thành viên.');
+      const profile = await ensureCommunityProfile(guild.id, member.id);
+      const xp = Number(profile.xp) || 0;
+      const level = Math.floor(xp / 100);
+      const progress = xp % 100;
+      const need = 100;
+      return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle('✨ Rank · ' + (member.user.globalName || member.user.username))
+        .setThumbnail(member.user.displayAvatarURL({ size: 128 }))
+        .setDescription('**Level ' + level + '** · ' + xp + ' XP tổng\\n`' + progressBar(progress, need) + '` ' + progress + '/100 XP tới level tiếp theo')
+        .setFooter({ text: 'Aki Community · XP cooldown 60 giây/tin nhắn' }).setTimestamp());
+    }
+    case 'balance': {
+      const member = target || user;
+      if (!member) throw new Error('Không tìm thấy thành viên.');
+      const profile = await ensureCommunityProfile(guild.id, member.id);
+      return embedPayload(new EmbedBuilder().setColor(0xFEE75C).setTitle('🪙 Ví xu · ' + (member.user.globalName || member.user.username))
+        .setDescription('**' + (Number(profile.coins) || 0).toLocaleString('en-US') + ' xu**')
+        .setFooter({ text: 'Xu ảo trong server · không có giá trị tiền thật' }).setTimestamp());
+    }
+    case 'daily': {
+      const result = await claimCommunityCoins(guild.id, userId, 'daily');
+      if (!result.ok) return reply('⏳ Bạn đã nhận daily rồi. Nhận lại ' + `<t:${Math.ceil(result.nextAt / 1000)}:R>` + '.');
+      return reply('🌞 Bạn nhận được **+' + result.reward + ' xu**! Số dư: **' + result.coins.toLocaleString('en-US') + ' xu**.');
+    }
+    case 'work': {
+      const result = await claimCommunityCoins(guild.id, userId, 'work');
+      if (!result.ok) return reply('🛠️ Bạn vừa làm việc rồi. Có thể làm tiếp ' + `<t:${Math.ceil(result.nextAt / 1000)}:R>` + '.');
+      return reply('🛠️ Hoàn thành công việc và nhận **+' + result.reward + ' xu**! Số dư: **' + result.coins.toLocaleString('en-US') + ' xu**.');
+    }
+    case 'leaderboard': {
+      const kind = args.kind === 'coins' ? 'coins' : 'levels';
+      const rows = await getCommunityLeaderboard(guild.id, kind, 10);
+      const body = rows.length ? rows.map(row => kind === 'coins'
+        ? '`#' + row.rank + '` <@' + row.user_id + '> · **' + Number(row.coins).toLocaleString('en-US') + ' xu**'
+        : '`#' + row.rank + '` <@' + row.user_id + '> · **Level ' + row.level + '** (' + Number(row.xp).toLocaleString('en-US') + ' XP)'
+      ).join('\\n') : 'Chưa có dữ liệu. Hãy trò chuyện hoặc dùng /daily để bắt đầu.';
+      return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle(kind === 'coins' ? '🏆 Top xu server' : '🏆 Top level server')
+        .setDescription(body).setFooter({ text: 'Aki Community · cập nhật trực tiếp từ profile' }).setTimestamp());
+    }
     case 'poll': {
       const opts = [args.option1, args.option2, args.option3, args.option4].filter(Boolean);
       const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
@@ -1193,6 +1408,16 @@ async function runCommand(name, ctx) {
       c.destroy();
       return reply('🎧 Đã rời voice.');
     }
+    case 'welcome-setup':
+    case 'goodbye-setup': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      const targetChannel = args.channel ? await guild.channels.fetch(args.channel).catch(() => null) : null;
+      if (!targetChannel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(targetChannel.type)) throw new Error('Chọn kênh text hoặc announcement thuộc server này.');
+      const key = name === 'welcome-setup' ? 'welcome_channel_id' : 'goodbye_channel_id';
+      await setConfig(guild.id, { [key]: targetChannel.id });
+      await addActivity(guild.id, userId, name, '#' + targetChannel.name);
+      return reply((name === 'welcome-setup' ? '👋 Kênh chào mừng' : '👋 Kênh tạm biệt') + ' đã được đặt thành <#' + targetChannel.id + '>.');
+    }
     case 'auto-voice': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
       if (args.enabled) {
@@ -1212,12 +1437,13 @@ async function runCommand(name, ctx) {
 function extractInteractionArgs(interaction) {
   const getUserId = () => interaction.options.getUser('user')?.id;
   const out = {};
-  if (['userinfo', 'avatar', 'warnings', 'legit'].includes(interaction.commandName)) out.user = getUserId();
+  if (['userinfo', 'avatar', 'warnings', 'legit', 'rank', 'balance'].includes(interaction.commandName)) out.user = getUserId();
   if (['ticket-setup', 'role-panel'].includes(interaction.commandName)) out.channel = interaction.options.getChannel('channel')?.id || undefined;
   if (['warn', 'kick', 'ban', 'timeout'].includes(interaction.commandName)) { out.user = getUserId(); }
   if (interaction.commandName === 'warn' || interaction.commandName === 'kick' || interaction.commandName === 'ban' || interaction.commandName === 'timeout') out.reason = interaction.options.getString('reason');
   if (interaction.commandName === 'timeout') out.minutes = interaction.options.getInteger('minutes');
   if (interaction.commandName === 'poll') for (const k of ['question','option1','option2','option3','option4']) out[k] = interaction.options.getString(k) || undefined;
+  if (interaction.commandName === 'leaderboard') out.kind = interaction.options.getString('type') || 'levels';
   if (interaction.commandName === '8ball') out.question = interaction.options.getString('question');
   if (interaction.commandName === 'roll') out.sides = interaction.options.getInteger('sides');
   if (interaction.commandName === 'remind') { out.seconds = interaction.options.getInteger('seconds'); out.text = interaction.options.getString('text'); }
@@ -1225,10 +1451,19 @@ function extractInteractionArgs(interaction) {
   if (interaction.commandName === 'clear' || interaction.commandName === 'slowmode') out[interaction.commandName === 'clear' ? 'amount' : 'seconds'] = interaction.options.getInteger(interaction.commandName === 'clear' ? 'amount' : 'seconds');
   if (interaction.commandName === 'role') { out.mode = interaction.options.getString('mode'); out.user = getUserId(); out.role = interaction.options.getRole('role')?.id; }
   if (interaction.commandName === 'announce') out.message = interaction.options.getString('message');
-  if (interaction.commandName === 'vc-join') out.channel = interaction.options.getChannel('channel')?.id;
+  if (['vc-join', 'welcome-setup', 'goodbye-setup'].includes(interaction.commandName)) out.channel = interaction.options.getChannel('channel')?.id;
   if (interaction.commandName === 'auto-voice') { out.enabled = interaction.options.getBoolean('enabled'); out.channel = interaction.options.getChannel('channel')?.id; }
   return out;
 }
+
+bot.on('error', error => { void reportRuntimeError(error, 'discord-client'); });
+bot.on('shardError', error => { void reportRuntimeError(error, 'discord-shard'); });
+process.on('unhandledRejection', reason => { void reportRuntimeError(reason instanceof Error ? reason : new Error(String(reason)), 'unhandled-rejection'); });
+process.on('uncaughtException', error => {
+  // Best-effort remote report, then exit so the hosting platform can restart a possibly corrupted process.
+  const timeout = new Promise(resolve => setTimeout(resolve, 2500));
+  Promise.race([reportRuntimeError(error, 'uncaught-exception'), timeout]).finally(() => process.exit(1));
+});
 
 bot.on('ready', async () => {
   console.log(`Logged in as ${bot.user.tag}`);
@@ -1268,13 +1503,16 @@ async function applyReactionRole(reaction, user, shouldAdd) {
     if (!guild || !message.id) return;
     guildId = guild.id;
     emojiName = reaction.emoji?.name || 'unknown emoji';
-    // Fast-filter ordinary chat reactions before any database lookups.
+    // Fast-filter ordinary chat reactions before database lookups.
     if (message.author?.id !== bot.user?.id) return;
-    if (!message.embeds?.some(item => String(item.footer?.text || '').includes('Reaction Roles'))) return;
-    // Ignore any emoji that is not mapped to the current or a recoverable panel.
-    let binding = await getReactionRoleBinding(guild.id, message.id, emojiName);
-    // If no database is configured, restore mappings from the panel embed after a restart.
-    if (!binding) binding = parseReactionRoleBindingFromMessage(message, emojiName);
+    const isRolePanel = message.embeds?.some(item => String(item.footer?.text || '').includes('Reaction Roles'));
+    if (!isRolePanel) return;
+    // Resolve from the embed first, so a failed or stale DB mapping cannot block assignment.
+    let binding = parseReactionRoleBindingFromMessage(message, bot.user?.id, emojiName);
+    if (!binding) {
+      try { binding = await getReactionRoleBinding(guild.id, message.id, emojiName); }
+      catch (dbError) { console.warn('Reaction-role DB lookup failed; embed fallback used:', dbError.message); }
+    }
     if (!binding?.role_id) return;
 
     const role = await guild.roles.fetch(binding.role_id).catch(() => null);
@@ -1302,6 +1540,7 @@ async function applyReactionRole(reaction, user, shouldAdd) {
   } catch (error) {
     const message = String(error?.message || 'unknown error');
     console.warn('Reaction-role handler failed:', { guildId, userId: user.id, emoji: emojiName, add: shouldAdd, error: message });
+    void reportRuntimeError(error, shouldAdd ? 'reaction-role-add' : 'reaction-role-remove', guildId);
     if (guildId) {
       await addActivity(guildId, user.id, 'error:reaction-role',
         (shouldAdd ? 'Không thể cấp role' : 'Không thể gỡ role') + ' bằng emoji ' + emojiName + ': ' + message).catch(() => {});
@@ -1384,6 +1623,18 @@ bot.on('messageCreate', async message => {
     }
     const cfg = await getConfig(message.guild.id);
     const prefix = cfg.prefix || '!';
+    if (!message.content.startsWith(prefix) && message.content.trim().length >= 4) {
+      try {
+        const gain = XP_PER_MESSAGE_MIN + Math.floor(Math.random() * (XP_PER_MESSAGE_MAX - XP_PER_MESSAGE_MIN + 1));
+        const profile = await awardCommunityXp(message.guild.id, message.author.id, gain);
+        if (profile && Math.floor((profile.xp - profile.gain) / 100) < profile.level) {
+          await message.channel.send('🎉 <@' + message.author.id + '> lên **Level ' + profile.level + '**! Dùng `/rank` để xem tiến độ.').catch(() => {});
+          await addActivity(message.guild.id, message.author.id, 'level:up', '🎉 Đạt Level ' + profile.level + ' với ' + profile.xp + ' XP.').catch(() => {});
+        }
+      } catch (error) {
+        void reportRuntimeError(error, 'community-xp', message.guild.id);
+      }
+    }
     if (!message.content.startsWith(prefix)) return;
     const [name, ...parts] = message.content.slice(prefix.length).trim().split(/\s+/);
     if (!name || !commands.some(c => c.name === name)) return;
@@ -1391,8 +1642,14 @@ bot.on('messageCreate', async message => {
       ping: {}, help: {}, server: {}, botinfo: {}, coinflip: {},
       '8ball': { question: parts.join(' ') }, roll: { sides: Number(parts[0]) || 6 }, remind: { seconds: Number(parts[0]), text: parts.slice(1).join(' ') },
       announce: { message: parts.join(' ') }, clear: { amount: Number(parts[0]) }, slowmode: { seconds: Number(parts[0]) }, lock: {}, unlock: {},
+      rank: {}, balance: {}, daily: {}, work: {}, leaderboard: { kind: parts[0] === 'coins' ? 'coins' : 'levels' },
       'vc-leave': {}
     };
+    if (['rank', 'balance'].includes(name)) {
+      const userMention = message.mentions.users.first();
+      const rawId = parts.find(part => /^\\d{17,20}$/.test(part));
+      if (userMention || rawId) basicMap[name].user = userMention?.id || rawId;
+    }
     if (name === 'afk') {
       const urlPart = parts.find(part => /^https?:\/\//i.test(part));
       const reason = parts.filter(part => part !== urlPart).join(' ').trim();
@@ -1411,21 +1668,38 @@ bot.on('messageCreate', async message => {
 // Auto voice state recovery when Discord moves/disconnects the bot.
 bot.on('guildMemberAdd', async member => {
   let autoRoleName = null;
+  let cfg = null;
+  try { cfg = await getConfig(member.guild.id); }
+  catch (error) { void reportRuntimeError(error, 'member-join-config', member.guild.id); }
+  // Welcome failures must never prevent a new member receiving their automatic role.
   try {
-    const cfg = await getConfig(member.guild.id);
-    let role = cfg.auto_role_id ? await member.guild.roles.fetch(cfg.auto_role_id).catch(() => null) : null;
-    if (!role) role = member.guild.roles.cache.find(r => r.name === '👥 Member') || null;
-    if (role) {
-      const me = member.guild.members.me || await member.guild.members.fetchMe();
-      if (role.position < me.roles.highest.position) {
-        await member.roles.add(role, 'Aki automatic join role');
-        autoRoleName = role.name;
-      }
+    if (cfg?.welcome_channel_id) {
+      const channel = await member.guild.channels.fetch(cfg.welcome_channel_id).catch(() => null);
+      if (!channel?.isTextBased?.()) throw new Error('Kênh welcome đã bị xoá hoặc không phải kênh text.');
+      await channel.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setTitle('👋 Chào mừng thành viên mới!').setDescription('Chào mừng ' + member.toString() + ' đến với **' + member.guild.name + '**!\nHãy đọc nội quy và chọn role phù hợp nhé.').setThumbnail(member.user.displayAvatarURL({ size: 256 })).setTimestamp()], allowedMentions: { users: [member.id] } });
     }
-  } catch (error) { console.warn('Auto-role assignment failed:', error.message); }
+  } catch (error) { void reportRuntimeError(error, 'welcome-message', member.guild.id); }
+  try {
+    const role = cfg?.auto_role_id ? await member.guild.roles.fetch(cfg.auto_role_id).catch(() => null) : null;
+    const fallbackRole = role || member.guild.roles.cache.find(r => r.name === '👥 Member') || null;
+    if (fallbackRole) {
+      const me = member.guild.members.me || await member.guild.members.fetchMe();
+      if (!me.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Bot thiếu quyền Manage Roles để cấp auto-role.');
+      if (fallbackRole.position >= me.roles.highest.position) throw new Error('Role auto-role đang ở trên role cao nhất của bot.');
+      await member.roles.add(fallbackRole, 'Aki automatic join role');
+      autoRoleName = fallbackRole.name;
+    }
+  } catch (error) { void reportRuntimeError(error, 'auto-role-assignment', member.guild.id); }
   await addActivity(member.guild.id, member.id, 'member:join', `👋 ${member.user.globalName || member.user.username} đã tham gia server.` + (autoRoleName ? ` · auto-role: ${autoRoleName}` : '')).catch(() => {});
 });
-bot.on('guildMemberRemove', member => {
+bot.on('guildMemberRemove', async member => {
+  try {
+    const cfg = await getConfig(member.guild.id);
+    if (cfg.goodbye_channel_id) {
+      const channel = await member.guild.channels.fetch(cfg.goodbye_channel_id).catch(() => null);
+      if (channel?.isTextBased?.()) await channel.send({ embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('👋 Một thành viên đã rời đi').setDescription('**' + (member.user.globalName || member.user.username) + '** đã rời khỏi server.').setThumbnail(member.user.displayAvatarURL({ size: 128 })).setTimestamp()], allowedMentions: { parse: [] } });
+    }
+  } catch (error) { void reportRuntimeError(error, 'goodbye-message', member.guild.id); }
   addActivity(member.guild.id, member.id, 'member:leave', `👋 ${member.user.globalName || member.user.username} đã rời server.`).catch(() => {});
 });
 bot.on('voiceStateUpdate', async (oldState, newState) => {
@@ -1622,7 +1896,7 @@ app.post('/api/guilds/:guildId/command', requireAuth, async (req, res) => {
     if (sent && name === 'poll') await addPollReactions(sent, [args.option1,args.option2,args.option3,args.option4].filter(Boolean).length);
     await addActivity(guild.id, req.session.user.id, `web:${name}`, `✅ Chạy từ dashboard bởi ${req.session.user.username || 'user'} tại #${channel?.name || 'unknown-channel'}.`);
     res.json({ ok: true, command: name, payload: typeof payload === 'string' ? payload : 'embed', channelId: sent?.channelId || channel?.id || null, messageId: sent?.id || null });
-  } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+  } catch (error) { void reportRuntimeError(error, 'api:command', req.params.guildId); res.status(error.status || 500).json({ error: error.message }); }
 });
 
 app.post('/api/guilds/:guildId/announce', requireAuth, async (req, res) => {
@@ -1664,6 +1938,7 @@ app.post('/api/guilds/:guildId/announce', requireAuth, async (req, res) => {
     await addActivity(guild.id, actorId, 'web:announce', '📣 Đã gửi thông báo từ dashboard tới #' + channel.name + '.');
     res.json({ ok: true, channelId: channel.id, channelName: channel.name, messageId: sent.id });
   } catch (error) {
+    void reportRuntimeError(error, 'api:announce', req.params.guildId);
     res.status(error.status || 500).json({ error: error.message || 'ANNOUNCEMENT_FAILED' });
   }
 });
@@ -1698,7 +1973,7 @@ app.post('/api/guilds/:guildId/roles-panel', requireAuth, async (req, res) => {
     if (!channel) return res.status(400).json({ error: 'ROLE_PANEL_CHANNEL_INVALID' });
     const sent = await setupRolePanel(guild, channel, req.session.user.id);
     res.json({ ok: true, channelId: sent.channelId, messageId: sent.id });
-  } catch (error) { res.status(error.status || 500).json({ error: error.message || 'ROLE_PANEL_FAILED' }); }
+  } catch (error) { void reportRuntimeError(error, 'api:roles-panel', req.params.guildId); res.status(error.status || 500).json({ error: error.message || 'ROLE_PANEL_FAILED' }); }
 });
 
 app.post('/api/guilds/:guildId/tickets/setup', requireAuth, async (req, res) => {
@@ -1728,7 +2003,7 @@ app.post('/api/guilds/:guildId/auto-role', requireAuth, async (req, res) => {
     const config = await setConfig(guild.id, { auto_role_id: roleId });
     await addActivity(guild.id, req.session.user.id, 'autorole:updated', roleId ? 'Auto-role set to ' + (await guild.roles.fetch(roleId)).name : 'Auto-role disabled');
     res.json({ ok: true, auto_role_id: config.auto_role_id });
-  } catch (error) { res.status(error.status || 500).json({ error: error.message || 'AUTO_ROLE_UPDATE_FAILED' }); }
+  } catch (error) { void reportRuntimeError(error, 'api:auto-role', req.params.guildId); res.status(error.status || 500).json({ error: error.message || 'AUTO_ROLE_UPDATE_FAILED' }); }
 });
 
 app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) => {
@@ -1850,6 +2125,7 @@ app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) =>
     res.json({ ok: true, result });
   } catch (error) {
     console.error('Server Builder failed:', error);
+    void reportRuntimeError(error, 'api:server-builder', req.params.guildId);
     res.status(error.status || 500).json({ error: error.message || 'SERVER_BUILDER_FAILED' });
   }
 });
@@ -1904,6 +2180,8 @@ setInterval(() => {
   const now = Date.now();
   for (const [sid, session] of sessionStore) if (now - session.lastSeen > 7 * 24 * 60 * 60_000) sessionStore.delete(sid);
   for (const [state, obj] of oauthStateStore) if (now - obj.createdAt > 10 * 60_000) oauthStateStore.delete(state);
+  for (const [key, last] of xpCooldowns) if (now - last > 30 * 60_000) xpCooldowns.delete(key);
+  for (const [key, last] of runtimeErrorCooldowns) if (now - last > 10 * 60_000) runtimeErrorCooldowns.delete(key);
   if (pool) dbQuery('DELETE FROM oauth_states WHERE created_at < $1', [now - 10 * 60_000]).catch(error => console.error('OAuth state cleanup failed:', error.message));
 }, 10 * 60_000);
 setInterval(() => {

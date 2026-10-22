@@ -21,6 +21,8 @@ jobs:
           node --check server.js
           node --check script.js
           node --check public/script.js
+          node --check lib/role-utils.js
+          node --test tests/*.test.js
       - name: Check root and public bundles stay synchronized
         run: |
           cmp index.html public/index.html
@@ -46,6 +48,15 @@ jobs:
           }
           assert.ok(client.includes('sendDashboardAnnouncement'), 'Missing announcement client handler');
           assert.ok(server.includes("message.react('✅')"), 'Missing +legit reaction');
+          assert.ok(server.includes("aki:rr:"), 'Missing emoji button fallback for role selection');
+          assert.ok(server.includes('normalizeReactionEmoji'), 'Missing Unicode emoji normalization');
+          assert.ok(server.includes('parseReactionRoleBindingFromMessage(message, bot.user?.id, emojiName)'), 'Reaction handler must resolve roles from the message embed first');
+          assert.ok(server.includes("process.on('unhandledRejection'"), 'Missing runtime error reporting hook');
+          assert.ok(server.includes("bot.on('error'"), 'Missing Discord client error reporting hook');
+          assert.ok(server.includes('CREATE TABLE IF NOT EXISTS community_profiles'), 'Missing persistent community profile table');
+          for (const name of ['rank','balance','daily','work','leaderboard','welcome-setup','goodbye-setup']) {
+            assert.ok(server.includes(`setName('${name}')`), `Missing slash command: ${name}`);
+          }
           const legitPattern = /^\+legit(?:\s+\+?\s*(?:<@!?(\d{17,20})>|@?(\d{17,20})))?\s*$/i;
           const targetId = '1393847310949290026';
           for (const [input, expected] of [
