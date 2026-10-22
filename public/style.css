@@ -221,3 +221,11 @@ body{background:var(--ash-0)}
   .announcement-card .command-form{gap:12px}
   .announcement-card button,.automation-card button{min-height:42px}
 }
+
+@media (max-width:760px), (pointer:coarse) {
+  .fog-1,.fog-2,.fog-3,.halo-one,.halo-two,.halo-three,.holo-card::after,.holo-sheen,.holo-scan,.brand-mark,.moth,.core-ring,.core-blade,.core-cross,.world-halo,.embers i,.spark:before {
+    animation:none!important; filter:none!important; transition:none!important;
+  }
+  .site-shell,.panel,.holo-card { box-shadow:none!important; }
+  .living-stage,.ashen-scene { transform:none!important; }
+}
