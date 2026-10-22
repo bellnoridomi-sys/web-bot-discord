@@ -206,3 +206,18 @@ body{background:var(--ash-0)}
 .announce-ping input{width:15px;height:15px;accent-color:#d7d7d2;flex:0 0 auto}
 .announcement-card .command-form textarea{min-height:100px}
 .announcement-card .command-form button:disabled{opacity:.55;cursor:wait}
+
+/* Mobile performance and compact dashboard layout */
+@media (max-width:760px), (pointer:coarse) {
+  #space{display:none!important}
+  .fog,.halo,.holo-sheen,.holo-scan,.embers,.avatar-orbit{animation:none!important;filter:none!important;backdrop-filter:none!important}
+  .living-layer::before,.living-layer::after{animation:none!important;filter:none!important}
+  .holo-card,.contact-card,.panel,.hud-panel{backdrop-filter:none!important}
+  .control-grid,.automation-panel-grid,.builder-form{grid-template-columns:minmax(0,1fr)!important}
+  .dashboard-bar,.dashboard-shell,.control-card,.builder-card,.announcement-card{min-width:0;max-width:100%}
+  .field input,.field select,.field textarea,.command-form textarea{min-width:0;max-width:100%;font-size:16px}
+  .metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .response-box{overflow-wrap:anywhere;word-break:break-word}
+  .announcement-card .command-form{gap:12px}
+  .announcement-card button,.automation-card button{min-height:42px}
+}
