@@ -91,6 +91,8 @@ async function initDb() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS auto_role_id TEXT;
+    ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS welcome_channel_id TEXT;
+    ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS goodbye_channel_id TEXT;
     CREATE TABLE IF NOT EXISTS warnings (
       id BIGSERIAL PRIMARY KEY,
       guild_id TEXT NOT NULL,
@@ -182,7 +184,9 @@ async function getConfig(guildId) {
     auto_voice_channel_id: null,
     prefix: '!',
     log_channel_id: null,
-    auto_role_id: null
+    auto_role_id: null,
+    welcome_channel_id: null,
+    goodbye_channel_id: null
   });
   return memory.configs.get(guildId);
 }
@@ -192,16 +196,18 @@ async function setConfig(guildId, patch) {
   const next = { ...current, ...patch };
   if (pool) {
     await dbQuery(`
-      INSERT INTO guild_configs(guild_id, auto_voice_enabled, auto_voice_channel_id, prefix, log_channel_id, auto_role_id, updated_at)
-      VALUES($1,$2,$3,$4,$5,$6,NOW())
+      INSERT INTO guild_configs(guild_id, auto_voice_enabled, auto_voice_channel_id, prefix, log_channel_id, auto_role_id, welcome_channel_id, goodbye_channel_id, updated_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW())
       ON CONFLICT(guild_id) DO UPDATE SET
         auto_voice_enabled=EXCLUDED.auto_voice_enabled,
         auto_voice_channel_id=EXCLUDED.auto_voice_channel_id,
         prefix=EXCLUDED.prefix,
         log_channel_id=EXCLUDED.log_channel_id,
         auto_role_id=EXCLUDED.auto_role_id,
+        welcome_channel_id=EXCLUDED.welcome_channel_id,
+        goodbye_channel_id=EXCLUDED.goodbye_channel_id,
         updated_at=NOW()
-    `, [guildId, Boolean(next.auto_voice_enabled), next.auto_voice_channel_id || null, next.prefix || '!', next.log_channel_id || null, next.auto_role_id || null]);
+    `, [guildId, Boolean(next.auto_voice_enabled), next.auto_voice_channel_id || null, next.prefix || '!', next.log_channel_id || null, next.auto_role_id || null, next.welcome_channel_id || null, next.goodbye_channel_id || null]);
   } else memory.configs.set(guildId, next);
   return next;
 }
@@ -851,7 +857,9 @@ const commands = [
   new SlashCommandBuilder().setName('announce').setDescription('Đăng thông báo đẹp.').setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages.toString()).addStringOption(o => o.setName('message').setDescription('Nội dung').setRequired(true)),
   new SlashCommandBuilder().setName('vc-join').setDescription('Bot vào voice.').setDefaultMemberPermissions(PermissionFlagsBits.Connect.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh voice').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(true)),
   new SlashCommandBuilder().setName('vc-leave').setDescription('Bot rời voice.').setDefaultMemberPermissions(PermissionFlagsBits.Connect.toString()),
-  new SlashCommandBuilder().setName('auto-voice').setDescription('Bật/tắt tự động giữ voice.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addBooleanOption(o => o.setName('enabled').setDescription('Bật hoặc tắt').setRequired(true)).addChannelOption(o => o.setName('channel').setDescription('Kênh voice').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(false))
+  new SlashCommandBuilder().setName('auto-voice').setDescription('Bật/tắt tự động giữ voice.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addBooleanOption(o => o.setName('enabled').setDescription('Bật hoặc tắt').setRequired(true)).addChannelOption(o => o.setName('channel').setDescription('Kênh voice').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(false)),
+  new SlashCommandBuilder().setName('welcome-setup').setDescription('Chọn kênh chào thành viên mới.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh chào mừng').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true)),
+  new SlashCommandBuilder().setName('goodbye-setup').setDescription('Chọn kênh thông báo thành viên rời server.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh tạm biệt').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
 ].map(c => c.toJSON());
 
 const helpLines = [
@@ -859,7 +867,7 @@ const helpLines = [
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Nhắc việc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
   ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['timeout', 'Timeout'], ['role', 'Quản lý role'],
-  ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice']
+  ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
 const magic8 = [
@@ -1412,6 +1420,16 @@ async function runCommand(name, ctx) {
       c.destroy();
       return reply('🎧 Đã rời voice.');
     }
+    case 'welcome-setup':
+    case 'goodbye-setup': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      const targetChannel = args.channel ? await guild.channels.fetch(args.channel).catch(() => null) : null;
+      if (!targetChannel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(targetChannel.type)) throw new Error('Chọn kênh text hoặc announcement thuộc server này.');
+      const key = name === 'welcome-setup' ? 'welcome_channel_id' : 'goodbye_channel_id';
+      await setConfig(guild.id, { [key]: targetChannel.id });
+      await addActivity(guild.id, userId, name, '#' + targetChannel.name);
+      return reply((name === 'welcome-setup' ? '👋 Kênh chào mừng' : '👋 Kênh tạm biệt') + ' đã được đặt thành <#' + targetChannel.id + '>.');
+    }
     case 'auto-voice': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
       if (args.enabled) {
@@ -1445,7 +1463,7 @@ function extractInteractionArgs(interaction) {
   if (interaction.commandName === 'clear' || interaction.commandName === 'slowmode') out[interaction.commandName === 'clear' ? 'amount' : 'seconds'] = interaction.options.getInteger(interaction.commandName === 'clear' ? 'amount' : 'seconds');
   if (interaction.commandName === 'role') { out.mode = interaction.options.getString('mode'); out.user = getUserId(); out.role = interaction.options.getRole('role')?.id; }
   if (interaction.commandName === 'announce') out.message = interaction.options.getString('message');
-  if (interaction.commandName === 'vc-join') out.channel = interaction.options.getChannel('channel')?.id;
+  if (['vc-join', 'welcome-setup', 'goodbye-setup'].includes(interaction.commandName)) out.channel = interaction.options.getChannel('channel')?.id;
   if (interaction.commandName === 'auto-voice') { out.enabled = interaction.options.getBoolean('enabled'); out.channel = interaction.options.getChannel('channel')?.id; }
   return out;
 }
@@ -1659,6 +1677,10 @@ bot.on('guildMemberAdd', async member => {
   let autoRoleName = null;
   try {
     const cfg = await getConfig(member.guild.id);
+    if (cfg.welcome_channel_id) {
+      const channel = await member.guild.channels.fetch(cfg.welcome_channel_id).catch(() => null);
+      if (channel?.isTextBased?.()) await channel.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setTitle('👋 Chào mừng thành viên mới!').setDescription('Chào mừng ' + member.toString() + ' đến với **' + member.guild.name + '**!\nHãy đọc nội quy và chọn role phù hợp nhé.').setThumbnail(member.user.displayAvatarURL({ size: 256 })).setTimestamp()], allowedMentions: { users: [member.id] } });
+    }
     let role = cfg.auto_role_id ? await member.guild.roles.fetch(cfg.auto_role_id).catch(() => null) : null;
     if (!role) role = member.guild.roles.cache.find(r => r.name === '👥 Member') || null;
     if (role) {
@@ -1671,7 +1693,14 @@ bot.on('guildMemberAdd', async member => {
   } catch (error) { console.warn('Auto-role assignment failed:', error.message); }
   await addActivity(member.guild.id, member.id, 'member:join', `👋 ${member.user.globalName || member.user.username} đã tham gia server.` + (autoRoleName ? ` · auto-role: ${autoRoleName}` : '')).catch(() => {});
 });
-bot.on('guildMemberRemove', member => {
+bot.on('guildMemberRemove', async member => {
+  try {
+    const cfg = await getConfig(member.guild.id);
+    if (cfg.goodbye_channel_id) {
+      const channel = await member.guild.channels.fetch(cfg.goodbye_channel_id).catch(() => null);
+      if (channel?.isTextBased?.()) await channel.send({ embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('👋 Một thành viên đã rời đi').setDescription('**' + (member.user.globalName || member.user.username) + '** đã rời khỏi server.').setThumbnail(member.user.displayAvatarURL({ size: 128 })).setTimestamp()], allowedMentions: { parse: [] } });
+    }
+  } catch (error) { void reportRuntimeError(error, 'goodbye-message', member.guild.id); }
   addActivity(member.guild.id, member.id, 'member:leave', `👋 ${member.user.globalName || member.user.username} đã rời server.`).catch(() => {});
 });
 bot.on('voiceStateUpdate', async (oldState, newState) => {
