@@ -53,12 +53,15 @@ app.use(rateLimit({ windowMs: 60_000, limit: 160, standardHeaders: true, legacyH
 const sessionStore = new Map();
 const oauthStateStore = new Map();
 const activityCache = [];
+const xpCooldowns = new Map();
+const runtimeErrorCooldowns = new Map();
 const memory = {
   configs: new Map(),
   warnings: new Map(),
   afk: new Map(),
   reactionRolePanels: new Map(),
-  reactionRoleBindings: new Map()
+  reactionRoleBindings: new Map(),
+  communityProfiles: new Map()
 };
 
 const pool = process.env.DATABASE_URL
@@ -120,6 +123,19 @@ async function initDb() {
       PRIMARY KEY(guild_id, message_id, emoji)
     );
     CREATE INDEX IF NOT EXISTS reaction_role_bindings_message_idx ON reaction_role_bindings(guild_id, message_id);
+    CREATE TABLE IF NOT EXISTS community_profiles (
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      xp BIGINT NOT NULL DEFAULT 0,
+      level INTEGER NOT NULL DEFAULT 0,
+      coins BIGINT NOT NULL DEFAULT 0,
+      last_daily BIGINT NOT NULL DEFAULT 0,
+      last_work BIGINT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (guild_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS community_profiles_coins_idx ON community_profiles(guild_id, coins DESC);
+    CREATE INDEX IF NOT EXISTS community_profiles_xp_idx ON community_profiles(guild_id, xp DESC);
     CREATE TABLE IF NOT EXISTS reminders (
       id BIGSERIAL PRIMARY KEY,
       guild_id TEXT NOT NULL,
@@ -299,6 +315,90 @@ async function reminderTick() {
       console.error('Reminder delivery failed:', error.message);
     }
   }
+}
+
+const XP_COOLDOWN_MS = 60_000;
+const XP_PER_MESSAGE_MIN = 8;
+const XP_PER_MESSAGE_MAX = 14;
+const COINS_DAILY_AMOUNT = 100;
+const COINS_WORK_MIN = 15;
+const COINS_WORK_MAX = 60;
+const DAILY_COOLDOWN_MS = 24 * 60 * 60_000;
+const WORK_COOLDOWN_MS = 60 * 60_000;
+
+async function ensureCommunityProfile(guildId, userId) {
+  if (pool) {
+    await dbQuery('INSERT INTO community_profiles(guild_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [guildId, userId]);
+    const result = await dbQuery('SELECT guild_id,user_id,xp,level,coins,last_daily,last_work FROM community_profiles WHERE guild_id=$1 AND user_id=$2', [guildId, userId]);
+    return result.rows[0];
+  }
+  const key = `${guildId}:${userId}`;
+  if (!memory.communityProfiles.has(key)) memory.communityProfiles.set(key, { guild_id: guildId, user_id: userId, xp: 0, level: 0, coins: 0, last_daily: 0, last_work: 0 });
+  return memory.communityProfiles.get(key);
+}
+
+async function awardCommunityXp(guildId, userId, amount) {
+  const key = `${guildId}:${userId}`;
+  const now = Date.now();
+  const last = xpCooldowns.get(key) || 0;
+  if (now - last < XP_COOLDOWN_MS) return null;
+  xpCooldowns.set(key, now);
+  const gain = Math.max(1, Math.min(100, Math.floor(Number(amount) || 0)));
+  if (pool) {
+    const result = await dbQuery(`
+      INSERT INTO community_profiles(guild_id,user_id,xp,level,coins,last_daily,last_work)
+      VALUES($1,$2,$3,0,0,0,0)
+      ON CONFLICT(guild_id,user_id) DO UPDATE SET
+        xp=community_profiles.xp + EXCLUDED.xp,
+        level=FLOOR((community_profiles.xp + EXCLUDED.xp) / 100.0)::INTEGER,
+        updated_at=NOW()
+      RETURNING xp,level
+    `, [guildId, userId, gain]);
+    return { gain, xp: Number(result.rows[0].xp), level: Number(result.rows[0].level) };
+  }
+  const profile = await ensureCommunityProfile(guildId, userId);
+  const oldLevel = Number(profile.level) || 0;
+  profile.xp = (Number(profile.xp) || 0) + gain;
+  profile.level = Math.floor(profile.xp / 100);
+  return { gain, xp: profile.xp, level: profile.level, oldLevel };
+}
+
+async function claimCommunityCoins(guildId, userId, type) {
+  const isDaily = type === 'daily';
+  const now = Date.now();
+  const cooldown = isDaily ? DAILY_COOLDOWN_MS : WORK_COOLDOWN_MS;
+  const column = isDaily ? 'last_daily' : 'last_work';
+  const reward = isDaily ? COINS_DAILY_AMOUNT : COINS_WORK_MIN + Math.floor(Math.random() * (COINS_WORK_MAX - COINS_WORK_MIN + 1));
+  await ensureCommunityProfile(guildId, userId);
+  if (pool) {
+    const result = await dbQuery(`UPDATE community_profiles SET coins=coins+$1, ${column}=$2, updated_at=NOW() WHERE guild_id=$3 AND user_id=$4 AND ${column} <= $5 RETURNING coins`, [reward, now, guildId, userId, now - cooldown]);
+    if (result.rowCount) return { ok: true, reward, coins: Number(result.rows[0].coins), nextAt: now + cooldown };
+    const profile = await ensureCommunityProfile(guildId, userId);
+    return { ok: false, coins: Number(profile.coins), nextAt: Number(profile[column]) + cooldown };
+  }
+  const profile = await ensureCommunityProfile(guildId, userId);
+  if (now - Number(profile[column] || 0) < cooldown) return { ok: false, coins: Number(profile.coins), nextAt: Number(profile[column]) + cooldown };
+  profile.coins = Number(profile.coins || 0) + reward;
+  profile[column] = now;
+  return { ok: true, reward, coins: profile.coins, nextAt: now + cooldown };
+}
+
+function progressBar(current, total, length = 12) {
+  const ratio = total > 0 ? Math.max(0, Math.min(1, current / total)) : 0;
+  const filled = Math.round(ratio * length);
+  return '█'.repeat(filled) + '░'.repeat(Math.max(0, length - filled));
+}
+
+async function getCommunityLeaderboard(guildId, kind = 'levels', limit = 10) {
+  const safeLimit = Math.max(1, Math.min(10, Number(limit) || 10));
+  if (pool) {
+    const column = kind === 'coins' ? 'coins' : 'xp';
+    const result = await dbQuery(`SELECT user_id,xp,level,coins FROM community_profiles WHERE guild_id=$1 ORDER BY ${column} DESC, user_id ASC LIMIT $2`, [guildId, safeLimit]);
+    return result.rows.map((row, index) => ({ rank: index + 1, user_id: row.user_id, xp: Number(row.xp), level: Number(row.level), coins: Number(row.coins) }));
+  }
+  return [...memory.communityProfiles.values()].filter(p => p.guild_id === guildId)
+    .sort((a,b) => (kind === 'coins' ? Number(b.coins)-Number(a.coins) : Number(b.xp)-Number(a.xp)))
+    .slice(0, safeLimit).map((p,index) => ({ ...p, rank:index+1 }));
 }
 
 function makeSession(user, guilds) {
