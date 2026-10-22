@@ -1675,22 +1675,28 @@ bot.on('messageCreate', async message => {
 // Auto voice state recovery when Discord moves/disconnects the bot.
 bot.on('guildMemberAdd', async member => {
   let autoRoleName = null;
+  let cfg = null;
+  try { cfg = await getConfig(member.guild.id); }
+  catch (error) { void reportRuntimeError(error, 'member-join-config', member.guild.id); }
+  // Welcome failures must never prevent a new member receiving their automatic role.
   try {
-    const cfg = await getConfig(member.guild.id);
-    if (cfg.welcome_channel_id) {
+    if (cfg?.welcome_channel_id) {
       const channel = await member.guild.channels.fetch(cfg.welcome_channel_id).catch(() => null);
-      if (channel?.isTextBased?.()) await channel.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setTitle('👋 Chào mừng thành viên mới!').setDescription('Chào mừng ' + member.toString() + ' đến với **' + member.guild.name + '**!\nHãy đọc nội quy và chọn role phù hợp nhé.').setThumbnail(member.user.displayAvatarURL({ size: 256 })).setTimestamp()], allowedMentions: { users: [member.id] } });
+      if (!channel?.isTextBased?.()) throw new Error('Kênh welcome đã bị xoá hoặc không phải kênh text.');
+      await channel.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setTitle('👋 Chào mừng thành viên mới!').setDescription('Chào mừng ' + member.toString() + ' đến với **' + member.guild.name + '**!\nHãy đọc nội quy và chọn role phù hợp nhé.').setThumbnail(member.user.displayAvatarURL({ size: 256 })).setTimestamp()], allowedMentions: { users: [member.id] } });
     }
-    let role = cfg.auto_role_id ? await member.guild.roles.fetch(cfg.auto_role_id).catch(() => null) : null;
-    if (!role) role = member.guild.roles.cache.find(r => r.name === '👥 Member') || null;
-    if (role) {
+  } catch (error) { void reportRuntimeError(error, 'welcome-message', member.guild.id); }
+  try {
+    const role = cfg?.auto_role_id ? await member.guild.roles.fetch(cfg.auto_role_id).catch(() => null) : null;
+    const fallbackRole = role || member.guild.roles.cache.find(r => r.name === '👥 Member') || null;
+    if (fallbackRole) {
       const me = member.guild.members.me || await member.guild.members.fetchMe();
-      if (role.position < me.roles.highest.position) {
-        await member.roles.add(role, 'Aki automatic join role');
-        autoRoleName = role.name;
-      }
+      if (!me.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Bot thiếu quyền Manage Roles để cấp auto-role.');
+      if (fallbackRole.position >= me.roles.highest.position) throw new Error('Role auto-role đang ở trên role cao nhất của bot.');
+      await member.roles.add(fallbackRole, 'Aki automatic join role');
+      autoRoleName = fallbackRole.name;
     }
-  } catch (error) { console.warn('Auto-role assignment failed:', error.message); }
+  } catch (error) { void reportRuntimeError(error, 'auto-role-assignment', member.guild.id); }
   await addActivity(member.guild.id, member.id, 'member:join', `👋 ${member.user.globalName || member.user.username} đã tham gia server.` + (autoRoleName ? ` · auto-role: ${autoRoleName}` : '')).catch(() => {});
 });
 bot.on('guildMemberRemove', async member => {
