@@ -862,6 +862,8 @@ async function getReactionRoleBinding(guildId, messageId, emoji) {
 }
 
 function parseReactionRoleBindingFromMessage(message, emoji) {
+  // Only trust a panel authored by this bot; do not honor look-alike user/webhook embeds.
+  if (!message?.author?.id || message.author.id !== bot.user?.id) return null;
   const embed = message?.embeds?.find(item => String(item.footer?.text || '').includes('Reaction Roles'));
   if (!embed?.description) return null;
   const line = embed.description.split('\n').find(item => item.trimStart().startsWith(emoji));
@@ -885,6 +887,9 @@ async function setupRolePanel(guild, channel, actorId) {
   }
 
   const memberRole = await ensureNamedRole(guild, '👥 Member', 0x99AAB5, []);
+  if (memberRole.position >= me.roles.highest.position) {
+    throw new Error('Role 👥 Member phải nằm dưới role cao nhất của bot trong Server Settings → Roles.');
+  }
   const config = await getConfig(guild.id);
   if (!config.auto_role_id) await setConfig(guild.id, { auto_role_id: memberRole.id });
 
@@ -903,7 +908,7 @@ async function setupRolePanel(guild, channel, actorId) {
     .setTitle('🎭 Chọn role ping của bạn')
     .setDescription([
       'Chạm vào emoji tương ứng để **nhận role**; gỡ reaction để **gỡ role**.',
-      '👥 Role Member sẽ được bot tự gán khi thành viên mới tham gia.',
+      '👥 Muốn tự gán Member cho người mới, hãy chọn 👥 Member trong mục Auto-role trên dashboard.',
       '',
       ...roles.map(choice => `${choice.emoji} **${choice.name}** — ${choice.description} (<@&${choice.role.id}>)`)
     ].join('\n'))
