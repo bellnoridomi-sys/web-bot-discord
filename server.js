@@ -234,6 +234,41 @@ async function sendActivityToDiscord(row) {
   await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
 }
 
+
+async function reportRuntimeError(error, source = 'runtime', guildId = null) {
+  const text = String(error?.stack || error?.message || error || 'Unknown runtime error').slice(0, 3500);
+  const message = String(error?.message || error || 'Unknown runtime error').slice(0, 500);
+  console.error('[runtime-error]', source, guildId || 'global', text);
+  const key = `${source}:${guildId || 'global'}:${message}`;
+  const now = Date.now();
+  if (now - (runtimeErrorCooldowns.get(key) || 0) < 30_000) return;
+  runtimeErrorCooldowns.set(key, now);
+  if (!bot.isReady()) return;
+  const guilds = guildId
+    ? [bot.guilds.cache.get(guildId)].filter(Boolean)
+    : [...bot.guilds.cache.values()].slice(0, 8);
+  for (const guild of guilds) {
+    try {
+      const config = await getConfig(guild.id).catch(() => null);
+      if (!config?.log_channel_id) continue;
+      const channel = await guild.channels.fetch(config.log_channel_id).catch(() => null);
+      if (!channel?.isTextBased?.() || channel.guild?.id !== guild.id) continue;
+      const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+      const permissions = me ? channel.permissionsFor(me) : null;
+      if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) continue;
+      const embed = new EmbedBuilder()
+        .setColor(0xED4245)
+        .setTitle('🚨 Aki Runtime Error · ' + String(source).slice(0, 180))
+        .setDescription('```text\\n' + text.replace(/```/g, '\`\u200b\`\u200b\`').slice(0, 3800) + '\\n```')
+        .addFields({ name: 'Server', value: guild.name.slice(0, 100), inline: true }, { name: 'Time', value: `<t:${Math.floor(now / 1000)}:F>`, inline: true })
+        .setFooter({ text: 'Automatic diagnostic log · do not share tokens/secrets' });
+      await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+    } catch (logError) {
+      console.warn('Could not deliver runtime error log:', logError?.message || logError);
+    }
+  }
+}
+
 async function addWarning(guildId, userId, moderatorId, reason) {
   if (pool) {
     await dbQuery('INSERT INTO warnings(guild_id,user_id,moderator_id,reason) VALUES($1,$2,$3,$4)', [guildId, userId, moderatorId, reason]);
@@ -1414,6 +1449,11 @@ function extractInteractionArgs(interaction) {
   if (interaction.commandName === 'auto-voice') { out.enabled = interaction.options.getBoolean('enabled'); out.channel = interaction.options.getChannel('channel')?.id; }
   return out;
 }
+
+bot.on('error', error => { void reportRuntimeError(error, 'discord-client'); });
+bot.on('shardError', error => { void reportRuntimeError(error, 'discord-shard'); });
+process.on('unhandledRejection', reason => { void reportRuntimeError(reason instanceof Error ? reason : new Error(String(reason)), 'unhandled-rejection'); });
+process.on('uncaughtExceptionMonitor', error => { void reportRuntimeError(error, 'uncaught-exception-monitor'); });
 
 bot.on('ready', async () => {
   console.log(`Logged in as ${bot.user.tag}`);
