@@ -1903,7 +1903,7 @@ app.post('/api/guilds/:guildId/command', requireAuth, async (req, res) => {
     if (sent && name === 'poll') await addPollReactions(sent, [args.option1,args.option2,args.option3,args.option4].filter(Boolean).length);
     await addActivity(guild.id, req.session.user.id, `web:${name}`, `✅ Chạy từ dashboard bởi ${req.session.user.username || 'user'} tại #${channel?.name || 'unknown-channel'}.`);
     res.json({ ok: true, command: name, payload: typeof payload === 'string' ? payload : 'embed', channelId: sent?.channelId || channel?.id || null, messageId: sent?.id || null });
-  } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+  } catch (error) { void reportRuntimeError(error, 'api:command', req.params.guildId); res.status(error.status || 500).json({ error: error.message }); }
 });
 
 app.post('/api/guilds/:guildId/announce', requireAuth, async (req, res) => {
@@ -1945,6 +1945,7 @@ app.post('/api/guilds/:guildId/announce', requireAuth, async (req, res) => {
     await addActivity(guild.id, actorId, 'web:announce', '📣 Đã gửi thông báo từ dashboard tới #' + channel.name + '.');
     res.json({ ok: true, channelId: channel.id, channelName: channel.name, messageId: sent.id });
   } catch (error) {
+    void reportRuntimeError(error, 'api:announce', req.params.guildId);
     res.status(error.status || 500).json({ error: error.message || 'ANNOUNCEMENT_FAILED' });
   }
 });
@@ -1979,7 +1980,7 @@ app.post('/api/guilds/:guildId/roles-panel', requireAuth, async (req, res) => {
     if (!channel) return res.status(400).json({ error: 'ROLE_PANEL_CHANNEL_INVALID' });
     const sent = await setupRolePanel(guild, channel, req.session.user.id);
     res.json({ ok: true, channelId: sent.channelId, messageId: sent.id });
-  } catch (error) { res.status(error.status || 500).json({ error: error.message || 'ROLE_PANEL_FAILED' }); }
+  } catch (error) { void reportRuntimeError(error, 'api:roles-panel', req.params.guildId); res.status(error.status || 500).json({ error: error.message || 'ROLE_PANEL_FAILED' }); }
 });
 
 app.post('/api/guilds/:guildId/tickets/setup', requireAuth, async (req, res) => {
@@ -2009,7 +2010,7 @@ app.post('/api/guilds/:guildId/auto-role', requireAuth, async (req, res) => {
     const config = await setConfig(guild.id, { auto_role_id: roleId });
     await addActivity(guild.id, req.session.user.id, 'autorole:updated', roleId ? 'Auto-role set to ' + (await guild.roles.fetch(roleId)).name : 'Auto-role disabled');
     res.json({ ok: true, auto_role_id: config.auto_role_id });
-  } catch (error) { res.status(error.status || 500).json({ error: error.message || 'AUTO_ROLE_UPDATE_FAILED' }); }
+  } catch (error) { void reportRuntimeError(error, 'api:auto-role', req.params.guildId); res.status(error.status || 500).json({ error: error.message || 'AUTO_ROLE_UPDATE_FAILED' }); }
 });
 
 app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) => {
@@ -2131,6 +2132,7 @@ app.post('/api/guilds/:guildId/server-builder', requireAuth, async (req, res) =>
     res.json({ ok: true, result });
   } catch (error) {
     console.error('Server Builder failed:', error);
+    void reportRuntimeError(error, 'api:server-builder', req.params.guildId);
     res.status(error.status || 500).json({ error: error.message || 'SERVER_BUILDER_FAILED' });
   }
 });
