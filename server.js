@@ -1239,36 +1239,49 @@ async function addPollReactions(message, count) {
 
 async function applyReactionRole(reaction, user, shouldAdd) {
   if (user.bot) return;
+  let guildId = reaction?.message?.guildId || reaction?.message?.guild?.id || null;
+  let emojiName = reaction?.emoji?.name || 'unknown emoji';
   try {
     if (reaction.partial) await reaction.fetch();
     if (reaction.message?.partial) await reaction.message.fetch();
     const message = reaction.message;
     const guild = message?.guild;
     if (!guild || !message.id) return;
-    const emoji = reaction.emoji.name;
-    if (!emoji) return;
-    let binding = await getReactionRoleBinding(guild.id, message.id, emoji);
-    if (!binding && !pool) binding = parseReactionRoleBindingFromMessage(message, emoji);
+    guildId = guild.id;
+    emojiName = reaction.emoji?.name || 'unknown emoji';
+    // Ignore all other reactions: only mappings persisted for the selected panel are actionable.
+    const binding = await getReactionRoleBinding(guild.id, message.id, emojiName);
     if (!binding?.role_id) return;
 
     const role = await guild.roles.fetch(binding.role_id).catch(() => null);
-    if (!role || role.managed || role.id === guild.id) return;
+    if (!role || role.managed || role.id === guild.id) {
+      throw new Error('Role đã bị xoá hoặc không thể tự gán. Hãy đăng lại bảng nhận role từ dashboard.');
+    }
     const me = guild.members.me || await guild.members.fetchMe();
+    if (!me.permissions.has(PermissionFlagsBits.ManageRoles)) {
+      throw new Error('Bot đang thiếu quyền Manage Roles.');
+    }
     if (role.position >= me.roles.highest.position) {
       if (shouldAdd) await reaction.users.remove(user.id).catch(() => {});
-      return;
+      throw new Error('Role ' + role.name + ' đang ở trên role cao nhất của bot.');
     }
-    const member = await guild.members.fetch(user.id).catch(() => null);
+
+    const member = await guild.members.fetch({ user: user.id, force: true }).catch(() => null);
     if (!member) return;
     if (shouldAdd && !member.roles.cache.has(role.id)) {
       await member.roles.add(role, 'Self-service reaction role');
-      await addActivity(guild.id, user.id, 'role:reaction-add', role.name + ' · nhận bằng reaction').catch(() => {});
+      await addActivity(guild.id, user.id, 'role:reaction-add', '✅ Đã gán ' + role.name + ' bằng emoji ' + emojiName + '.').catch(() => {});
     } else if (!shouldAdd && member.roles.cache.has(role.id)) {
       await member.roles.remove(role, 'Self-service reaction role removed');
-      await addActivity(guild.id, user.id, 'role:reaction-remove', role.name + ' · gỡ bằng reaction').catch(() => {});
+      await addActivity(guild.id, user.id, 'role:reaction-remove', '➖ Đã gỡ ' + role.name + ' bằng emoji ' + emojiName + '.').catch(() => {});
     }
   } catch (error) {
-    console.warn('Reaction-role handler failed:', error.message);
+    const message = String(error?.message || 'unknown error');
+    console.warn('Reaction-role handler failed:', { guildId, userId: user.id, emoji: emojiName, add: shouldAdd, error: message });
+    if (guildId) {
+      await addActivity(guildId, user.id, 'error:reaction-role',
+        (shouldAdd ? 'Không thể cấp role' : 'Không thể gỡ role') + ' bằng emoji ' + emojiName + ': ' + message).catch(() => {});
+    }
   }
 }
 bot.on('messageReactionAdd', (reaction, user) => applyReactionRole(reaction, user, true));
@@ -1302,7 +1315,7 @@ bot.on('messageCreate', async message => {
   if (!message.guild || message.author.bot) return;
   if (/^\+legit(?:\s|$)/i.test(message.content.trim())) {
     try {
-      const match = message.content.trim().match(/^\+legit(?:\s+\+?\s*(?:<@!?(\d{17,20})>|(\d{17,20})))?\s*$/i);
+      const match = message.content.trim().match(/^\+legit(?:\s+\+?\s*(?:<@!?(\d{17,20})>|@?(\d{17,20})))?\s*$/i);
       if (!match) {
         await message.reply('Use +legit or +legit @1393847310949290026.').catch(() => {});
         return;
