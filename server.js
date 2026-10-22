@@ -1471,7 +1471,11 @@ function extractInteractionArgs(interaction) {
 bot.on('error', error => { void reportRuntimeError(error, 'discord-client'); });
 bot.on('shardError', error => { void reportRuntimeError(error, 'discord-shard'); });
 process.on('unhandledRejection', reason => { void reportRuntimeError(reason instanceof Error ? reason : new Error(String(reason)), 'unhandled-rejection'); });
-process.on('uncaughtExceptionMonitor', error => { void reportRuntimeError(error, 'uncaught-exception-monitor'); });
+process.on('uncaughtException', error => {
+  // Best-effort remote report, then exit so the hosting platform can restart a possibly corrupted process.
+  const timeout = new Promise(resolve => setTimeout(resolve, 2500));
+  Promise.race([reportRuntimeError(error, 'uncaught-exception'), timeout]).finally(() => process.exit(1));
+});
 
 bot.on('ready', async () => {
   console.log(`Logged in as ${bot.user.tag}`);
