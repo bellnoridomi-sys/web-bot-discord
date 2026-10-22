@@ -672,7 +672,7 @@ const bot = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates
   ],
-  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User],
   allowedMentions: { parse: ['users', 'roles'] }
 });
 
@@ -1250,7 +1250,9 @@ async function applyReactionRole(reaction, user, shouldAdd) {
     guildId = guild.id;
     emojiName = reaction.emoji?.name || 'unknown emoji';
     // Ignore all other reactions: only mappings persisted for the selected panel are actionable.
-    const binding = await getReactionRoleBinding(guild.id, message.id, emojiName);
+    let binding = await getReactionRoleBinding(guild.id, message.id, emojiName);
+    // If no database is configured, restore mappings from the panel embed after a restart.
+    if (!binding && !pool) binding = parseReactionRoleBindingFromMessage(message, emojiName);
     if (!binding?.role_id) return;
 
     const role = await guild.roles.fetch(binding.role_id).catch(() => null);
@@ -1322,8 +1324,11 @@ bot.on('messageCreate', async message => {
       }
       const targetId = match[1] || match[2] || null;
       const isConfiguredAccount = message.author.id === LEGIT_TARGET_USER_ID;
-      if (!isConfiguredAccount && targetId !== LEGIT_TARGET_USER_ID) {
-        throw new Error('Only the configured account or a staff member targeting that ID can trigger +legit.');
+      if (targetId && targetId !== LEGIT_TARGET_USER_ID) {
+        throw new Error('ID được nhắc phải đúng tài khoản đã cấu hình: ' + LEGIT_TARGET_USER_ID + '.');
+      }
+      if (!isConfiguredAccount && !targetId) {
+        throw new Error('Dùng +legit + @' + LEGIT_TARGET_USER_ID + ' để xác nhận tài khoản mục tiêu.');
       }
       if (!isConfiguredAccount) {
         const actor = message.member || await fetchGuildMember(message.guild, message.author.id);
