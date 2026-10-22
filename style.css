@@ -200,3 +200,32 @@ body{background:var(--ash-0)}
 
 .automation-card{grid-column:1/-1;padding:22px}.automation-panel-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.automation-panel-grid .field{min-width:0}.automation-card .response-box{white-space:pre-wrap;overflow-wrap:anywhere}.builder-card{grid-column:1/-1;padding:22px}.builder-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px}.builder-form .field{min-width:0}.builder-preview{margin-top:16px;padding:15px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.025)}.builder-preview-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;color:var(--muted);font-size:9px;letter-spacing:.13em}.builder-preview-head small{letter-spacing:0}.builder-preview-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.builder-preview-group{min-width:0;padding:12px;border:1px solid var(--line);border-radius:10px;background:rgba(0,0,0,.2)}.builder-preview-group>b{display:block;font-size:11px;margin-bottom:8px;color:var(--soft)}.builder-preview-group>div{display:flex;flex-wrap:wrap;gap:5px}.builder-preview-group span{font-size:10px;color:var(--muted);padding:4px 7px;border-radius:6px;background:rgba(255,255,255,.045);overflow-wrap:anywhere}.builder-actions{margin-top:12px}.builder-card .response-box{white-space:pre-wrap;max-height:230px;overflow:auto}.builder-card button:disabled{opacity:.55;cursor:wait}
 @media(max-width:700px){.builder-form,.builder-preview-list{grid-template-columns:1fr}.builder-card{padding:15px}}
+
+/* Dashboard announcement composer */
+.announce-ping{display:flex;align-items:center;gap:9px;margin-top:4px;color:#aaa;font-size:10px;line-height:1.5}
+.announce-ping input{width:15px;height:15px;accent-color:#d7d7d2;flex:0 0 auto}
+.announcement-card .command-form textarea{min-height:100px}
+.announcement-card .command-form button:disabled{opacity:.55;cursor:wait}
+
+/* Mobile performance and compact dashboard layout */
+@media (max-width:760px), (pointer:coarse) {
+  #space{display:none!important}
+  .fog,.halo,.holo-sheen,.holo-scan,.embers,.avatar-orbit{animation:none!important;filter:none!important;backdrop-filter:none!important}
+  .living-layer::before,.living-layer::after{animation:none!important;filter:none!important}
+  .holo-card,.contact-card,.panel,.hud-panel{backdrop-filter:none!important}
+  .control-grid,.automation-panel-grid,.builder-form{grid-template-columns:minmax(0,1fr)!important}
+  .dashboard-bar,.dashboard-shell,.control-card,.builder-card,.announcement-card{min-width:0;max-width:100%}
+  .field input,.field select,.field textarea,.command-form textarea{min-width:0;max-width:100%;font-size:16px}
+  .metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .response-box{overflow-wrap:anywhere;word-break:break-word}
+  .announcement-card .command-form{gap:12px}
+  .announcement-card button,.automation-card button{min-height:42px}
+}
+
+@media (max-width:760px), (pointer:coarse) {
+  .fog-1,.fog-2,.fog-3,.halo-one,.halo-two,.halo-three,.holo-card::after,.holo-sheen,.holo-scan,.brand-mark,.moth,.core-ring,.core-blade,.core-cross,.world-halo,.embers i,.spark:before {
+    animation:none!important; filter:none!important; transition:none!important;
+  }
+  .site-shell,.panel,.holo-card { box-shadow:none!important; }
+  .living-stage,.ashen-scene { transform:none!important; }
+}

@@ -173,9 +173,21 @@
           <article class="panel control-card afk-card"><div class="panel-title"><div><span>AFK STUDIO</span><h3>Build your notice</h3></div><span id="afkStatus" class="status-chip">IDLE</span></div><div class="afk-layout"><div class="afk-form"><div class="field"><label for="afkReason">AFK reason</label><input id="afkReason" maxlength="240" placeholder="đi ngủ / đi học / bận..."></div><div class="field"><label for="afkMedia">Image / GIF URL</label><input id="afkMedia" placeholder="https://.../anime.gif" type="url"></div><div class="button-row"><button class="btn btn-light" id="saveAfk" type="button">SET AFK</button><button class="btn btn-ghost" id="clearAfk" type="button">I'M BACK</button></div></div><div class="afk-preview"><div class="preview-media" id="afkMediaPreview"><span>PREVIEW / AFK MEDIA</span></div><strong>Aki AFK Notice</strong><small id="afkPreviewText">Your reason will appear here.</small></div></div></article>
           <article class="panel control-card"><div class="panel-title"><div><span>COMMAND LAB</span><h3>Send to Discord</h3></div><span class="status-chip">LIVE</span></div><div class="command-form"><div class="command-name"><span>/</span><input id="commandName" value="announce" placeholder="announce / afk / clear / vc-join"></div><select id="textChannel"><option value="">Default text channel</option></select><textarea id="commandArgs" rows="5" placeholder='{"message":"Aki is online"}'></textarea><button class="btn btn-light" id="sendCommand" type="button">EXECUTE ↗</button></div><pre id="responseBox" class="response-box">READY · waiting for command</pre></article>
           <article class="panel control-card audit-config-card"><div class="panel-title"><div><span>LIVE AUDIT BRIDGE</span><h3>🧾 Discord log channel</h3></div><span class="status-chip">REALTIME</span></div><p class="tiny-note">Chọn kênh để bot gửi log lệnh chạy trên web, slash/prefix command và thành viên vào/rời server. Nhật ký trên web cũng cập nhật qua Socket.IO.</p><div class="field"><label for="logChannel">KÊNH NHẬN LOG</label><select id="logChannel"><option value="">Chỉ log trên web</option></select></div><div class="button-row"><button class="btn btn-light" id="saveAuditLog" type="button">LƯU KÊNH LOG ↗</button></div><pre id="auditStatus" class="response-box">READY · chọn kênh log Discord (tuỳ chọn)</pre></article>
+          <article class="panel control-card announcement-card">
+            <div class="panel-title"><div><span>ANNOUNCEMENT BRIDGE</span><h3>📣 Gửi thông báo từ web</h3></div><span class="status-chip">WEB ↔ DISCORD</span></div>
+            <p class="tiny-note">Chọn kênh, soạn nội dung rồi gửi trực tiếp qua bot. Ping @everyone chỉ bật khi bạn có quyền Mention Everyone.</p>
+            <div class="command-form">
+              <div class="field"><label for="announcementChannel">KÊNH ĐĂNG THÔNG BÁO</label><select id="announcementChannel"><option value="">Chọn kênh text</option></select></div>
+              <div class="field"><label for="announcementTitle">TIÊU ĐỀ</label><input id="announcementTitle" maxlength="256" value="📣 THÔNG BÁO" placeholder="Tiêu đề thông báo"></div>
+              <div class="field"><label for="announcementMessage">NỘI DUNG</label><textarea id="announcementMessage" rows="4" maxlength="4000" placeholder="Nhập thông báo sẽ gửi tới Discord..."></textarea></div>
+              <label class="announce-ping"><input id="announcementPingEveryone" type="checkbox"> <span>📢 Ping @everyone (cần quyền Mention Everyone)</span></label>
+              <button class="btn btn-light" id="sendAnnouncement" type="button">📣 GỬI THÔNG BÁO ↗</button>
+            </div>
+            <pre id="announcementStatus" class="response-box">READY · chọn kênh và nhập nội dung</pre>
+          </article>
           <article class="panel control-card automation-card">
             <div class="panel-title"><div><span>AUTOMATION HUB</span><h3>⚙️ Auto-role & panels</h3></div><span class="status-chip">WEB ↔ DISCORD</span></div>
-            <p class="tiny-note">Tự gán role khi thành viên mới vào, đăng panel tự chọn role bằng nút emoji và tạo hệ thống ticket riêng tư.</p>
+            <p class="tiny-note">Tự gán role Member khi thành viên mới vào, đăng bảng reaction-role để nhận/gỡ role ping bằng emoji và tạo ticket riêng tư.</p>
             <div class="field"><label for="autoRoleSelect">ROLE TỰ ĐỘNG KHI THAM GIA</label><select id="autoRoleSelect"><option value="">Tắt auto-role</option></select></div>
             <div class="button-row"><button class="btn btn-light" id="saveAutoRole" type="button">LƯU AUTO-ROLE ↗</button></div>
             <div class="automation-panel-grid">
@@ -190,7 +202,7 @@
     </section>
 
     <section class="page" data-page="commands" aria-labelledby="commands-title">
-      <div class="page-head"><div><div class="eyebrow">03 / COMMANDS</div><h2 id="commands-title">29 tools.<br><span>No filler.</span></h2></div><p>Slash commands thật được đăng ký qua Discord HTTP API. Prefix `!` hỗ trợ lệnh nhanh; `+legit @thành_viên` dành riêng cho staff xác minh legit.</p></div>
+      <div class="page-head"><div><div class="eyebrow">03 / COMMANDS</div><h2 id="commands-title">29 tools.<br><span>No filler.</span></h2></div><p>Slash commands thật được đăng ký qua Discord HTTP API. Prefix `!` hỗ trợ lệnh nhanh; tài khoản được cấu hình có thể dùng `+legit` để bot thả ✅ vào chính tin nhắn lệnh.</p></div>
       <div id="commandCatalog" class="command-catalog"></div>
     </section>
 

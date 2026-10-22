@@ -10,6 +10,8 @@ Full-stack Discord bot + web dashboard, styled monochrome/cinematic. The backend
 
 The web dashboard has guild selection, live runtime metrics, voice controls, command lab, activity feed, Discord OAuth, Google OAuth, animated 3D UI, and an AFK Studio. The AFK profile is stored per server/user and supports an optional direct image/GIF URL.
 
+The dashboard also supports a configurable channel for a reaction-role panel (Member auto-role plus basic opt-in ping roles), direct announcement posting from the web panel, and a `+legit` reaction shortcut. The account allowed to use the shortcut defaults to the Discord ID in this project; optionally set `LEGIT_TARGET_USER_ID` to override it.
+
 ## Important
 
 The code never asks users for or stores a Discord account token. Use official bot OAuth and the Discord Developer Portal.

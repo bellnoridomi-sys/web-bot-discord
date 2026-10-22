@@ -1,0 +1,63 @@
+name: Validate dashboard and bot
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['*']
+
+jobs:
+  syntax-and-bundle-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check server and dashboard JavaScript syntax
+        run: |
+          node --check server.js
+          node --check script.js
+          node --check public/script.js
+      - name: Check root and public bundles stay synchronized
+        run: |
+          cmp index.html public/index.html
+          cmp script.js public/script.js
+          cmp style.css public/style.css
+      - name: Check critical dashboard and reaction-role hooks exist
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const server = fs.readFileSync('server.js', 'utf8');
+          const html = fs.readFileSync('index.html', 'utf8');
+          const client = fs.readFileSync('script.js', 'utf8');
+          for (const route of [
+            "app.post('/api/guilds/:guildId/roles-panel'",
+            "app.post('/api/guilds/:guildId/announce'",
+            "bot.on('messageReactionAdd'",
+            "bot.on('messageReactionRemove'",
+            "bot.on('guildMemberAdd'"
+          ]) assert.ok(server.includes(route), `Missing server hook: ${route}`);
+          for (const id of ['announcementChannel','announcementMessage','sendAnnouncement','rolePanelChannel','postRolePanel']) {
+            assert.ok(html.includes(`id="${id}"`), `Missing dashboard element: ${id}`);
+          }
+          assert.ok(client.includes('sendDashboardAnnouncement'), 'Missing announcement client handler');
+          assert.ok(server.includes("message.react('✅')"), 'Missing +legit reaction');
+          const legitPattern = /^\+legit(?:\s+\+?\s*(?:<@!?(\d{17,20})>|@?(\d{17,20})))?\s*$/i;
+          const targetId = '1393847310949290026';
+          for (const [input, expected] of [
+            ['+legit', null],
+            ['+legit + <@1393847310949290026>', targetId],
+            ['+legit <@!1393847310949290026>', targetId],
+            ['+legit + @1393847310949290026', targetId],
+            ['+legit + 1393847310949290026', targetId]
+          ]) {
+            const match = input.match(legitPattern);
+            assert.ok(match, `+legit syntax should parse: ${input}`);
+            assert.equal(match[1] || match[2] || null, expected, `Wrong +legit target for: ${input}`);
+          }
+          console.log('Critical bot/dashboard hooks and +legit formats verified.');
+          NODE
