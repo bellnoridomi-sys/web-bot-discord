@@ -4,13 +4,24 @@ Full-stack Discord bot + web dashboard, styled monochrome/cinematic. The backend
 
 ## Features
 
-26 real bot features via slash commands:
+36 real bot features via slash commands:
 
-`/ping` · `/help` · `/server` · `/userinfo` · `/avatar` · `/botinfo` · `/poll` · `/8ball` · `/roll` · `/coinflip` · `/remind` · `/afk [reason] [image_url] [media]` · `/warn` · `/warnings` · `/clear` · `/slowmode` · `/lock` · `/unlock` · `/kick` · `/ban` · `/timeout` · `/role` · `/announce` · `/vc-join` · `/vc-leave` · `/auto-voice`
+`/ping` · `/help` · `/server` · `/userinfo` · `/avatar` · `/botinfo` · `/rank` · `/balance` · `/daily` · `/work` · `/leaderboard` · `/poll` · `/8ball` · `/roll` · `/coinflip` · `/remind` · `/afk [reason] [image_url] [media]` · `/warn` · `/warnings` · `/clear` · `/slowmode` · `/lock` · `/unlock` · `/kick` · `/ban` · `/timeout` · `/role` · `/legit` · `/ticket-setup` · `/role-panel` · `/announce` · `/vc-join` · `/vc-leave` · `/auto-voice` · `/welcome-setup` · `/goodbye-setup`
 
 The web dashboard has guild selection, live runtime metrics, voice controls, command lab, activity feed, Discord OAuth, Google OAuth, animated 3D UI, and an AFK Studio. The AFK profile is stored per server/user and supports an optional direct image/GIF URL.
 
 The dashboard also supports a configurable channel for a reaction-role panel (Member auto-role plus basic opt-in ping roles), direct announcement posting from the web panel, and a `+legit` reaction shortcut. The account allowed to use the shortcut defaults to the Discord ID in this project; optionally set `LEGIT_TARGET_USER_ID` to override it.
+
+ 
+## Role and runtime troubleshooting
+
+- In **Dashboard → Auto-role & panels**, select the text channel and click **POST ROLE PANEL** again after deploying. The new panel includes both Unicode reaction emojis and matching emoji buttons; the buttons show an ephemeral success or permission error.
+- Make sure the bot has **Manage Roles**, **Add Reactions**, **Read Message History**, **Send Messages**, and **Embed Links** in the selected channel. Place the bot's highest role above `👥 Member` and every opt-in ping role.
+- Select the desired channel in **Discord log channel** and save it. Reaction-role errors, dashboard operation failures, runtime promise errors, and Discord client errors are sent there when the bot is online and can access the log channel.
+- `/welcome-setup channel:#welcome` and `/goodbye-setup channel:#goodbye` configure join/leave announcements.
+- `/rank` and `/leaderboard type:Levels / XP` use message XP (one award per member per 60 seconds). `/daily`, `/work`, `/balance`, and `/leaderboard type:Coins / Xu` use virtual server coins only.
+- Persistent XP, coins, role panel bindings, and dashboard sessions require a working `DATABASE_URL`. Without Postgres, fallback data is in memory and is lost when the process restarts.
+
 
 ## Important
 
