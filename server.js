@@ -817,16 +817,26 @@ async function getReactionRolePanel(guildId) {
 
 async function saveReactionRolePanel(guildId, channelId, messageId, bindings) {
   if (pool) {
-    await dbQuery('DELETE FROM reaction_role_bindings WHERE guild_id=$1', [guildId]);
-    await dbQuery(
-      'INSERT INTO reaction_role_panels(guild_id, channel_id, message_id, updated_at) VALUES($1,$2,$3,NOW()) ON CONFLICT(guild_id) DO UPDATE SET channel_id=EXCLUDED.channel_id, message_id=EXCLUDED.message_id, updated_at=NOW()',
-      [guildId, channelId, messageId]
-    );
-    for (const binding of bindings) {
-      await dbQuery(
-        'INSERT INTO reaction_role_bindings(guild_id,message_id,emoji,role_id) VALUES($1,$2,$3,$4) ON CONFLICT(guild_id,message_id,emoji) DO UPDATE SET role_id=EXCLUDED.role_id',
-        [guildId, messageId, binding.emoji, binding.roleId]
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM reaction_role_bindings WHERE guild_id=$1', [guildId]);
+      await client.query(
+        'INSERT INTO reaction_role_panels(guild_id, channel_id, message_id, updated_at) VALUES($1,$2,$3,NOW()) ON CONFLICT(guild_id) DO UPDATE SET channel_id=EXCLUDED.channel_id, message_id=EXCLUDED.message_id, updated_at=NOW()',
+        [guildId, channelId, messageId]
       );
+      for (const binding of bindings) {
+        await client.query(
+          'INSERT INTO reaction_role_bindings(guild_id,message_id,emoji,role_id) VALUES($1,$2,$3,$4) ON CONFLICT(guild_id,message_id,emoji) DO UPDATE SET role_id=EXCLUDED.role_id',
+          [guildId, messageId, binding.emoji, binding.roleId]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
     }
     return;
   }
@@ -840,7 +850,6 @@ async function saveReactionRolePanel(guildId, channelId, messageId, bindings) {
     });
   }
 }
-
 async function getReactionRoleBinding(guildId, messageId, emoji) {
   if (pool) {
     const result = await dbQuery(
@@ -901,9 +910,14 @@ async function setupRolePanel(guild, channel, actorId) {
     .setFooter({ text: 'Aki Dev · Reaction Roles' });
   const message = await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
   const bindings = roles.map(choice => ({ emoji: choice.emoji, roleId: choice.role.id }));
+  try {
+    // Finish the visible panel before switching the stored mapping; don't strand users on a partial panel.
+    for (const choice of roles) await message.react(choice.emoji);
+  } catch (error) {
+    await message.delete().catch(() => {});
+    throw new Error('Không thể thêm emoji reaction vào bảng role. Kiểm tra quyền Add Reactions và thử lại. Chi tiết: ' + error.message);
+  }
   await saveReactionRolePanel(guild.id, channel.id, message.id, bindings);
-
-  for (const choice of roles) await message.react(choice.emoji);
   if (oldPanel?.message_id && oldPanel.message_id !== message.id) {
     const oldChannel = await guild.channels.fetch(oldPanel.channel_id).catch(() => null);
     if (oldChannel?.isTextBased?.()) {
@@ -1252,7 +1266,7 @@ async function applyReactionRole(reaction, user, shouldAdd) {
     // Ignore all other reactions: only mappings persisted for the selected panel are actionable.
     let binding = await getReactionRoleBinding(guild.id, message.id, emojiName);
     // If no database is configured, restore mappings from the panel embed after a restart.
-    if (!binding && !pool) binding = parseReactionRoleBindingFromMessage(message, emojiName);
+    if (!binding) binding = parseReactionRoleBindingFromMessage(message, emojiName);
     if (!binding?.role_id) return;
 
     const role = await guild.roles.fetch(binding.role_id).catch(() => null);
@@ -1388,7 +1402,7 @@ bot.on('guildMemberAdd', async member => {
   try {
     const cfg = await getConfig(member.guild.id);
     let role = cfg.auto_role_id ? await member.guild.roles.fetch(cfg.auto_role_id).catch(() => null) : null;
-    if (!role && !cfg.auto_role_id) role = member.guild.roles.cache.find(r => r.name === '👥 Member') || null;
+    if (!role) role = member.guild.roles.cache.find(r => r.name === '👥 Member') || null;
     if (role) {
       const me = member.guild.members.me || await member.guild.members.fetchMe();
       if (role.position < me.roles.highest.position) {
