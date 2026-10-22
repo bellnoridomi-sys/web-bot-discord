@@ -46,5 +46,18 @@ jobs:
           }
           assert.ok(client.includes('sendDashboardAnnouncement'), 'Missing announcement client handler');
           assert.ok(server.includes("message.react('✅')"), 'Missing +legit reaction');
-          console.log('Critical bot/dashboard hooks verified.');
+          const legitPattern = /^\\+legit(?:\\s+\\+?\\s*(?:<@!?(\\d{17,20})>|@?(\\d{17,20})))?\\s*$/i;
+          const targetId = '1393847310949290026';
+          for (const [input, expected] of [
+            ['+legit', null],
+            ['+legit + <@1393847310949290026>', targetId],
+            ['+legit <@!1393847310949290026>', targetId],
+            ['+legit + @1393847310949290026', targetId],
+            ['+legit + 1393847310949290026', targetId]
+          ]) {
+            const match = input.match(legitPattern);
+            assert.ok(match, `+legit syntax should parse: ${input}`);
+            assert.equal(match[1] || match[2] || null, expected, `Wrong +legit target for: ${input}`);
+          }
+          console.log('Critical bot/dashboard hooks and +legit formats verified.');
           NODE
