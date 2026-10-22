@@ -895,17 +895,29 @@ const SELF_ASSIGNABLE_ROLES = [
 ];
 
 const REACTION_ROLE_CHOICES = [
-  { emoji: '📣', name: '📣 Announcement Ping', color: 0x5865F2, description: 'Thông báo quan trọng của server' },
-  { emoji: '🎉', name: '🔔 Event Ping', color: 0x57F287, description: 'Sự kiện và hoạt động cộng đồng' },
-  { emoji: '🎁', name: '🎁 Giveaway Ping', color: 0xEB459E, description: 'Quà tặng và giveaway' },
-  { emoji: '🎮', name: '🎮 Game Ping', color: 0xFEE75C, description: 'Tìm team và hẹn giờ chơi game' },
-  { emoji: '💬', name: '💬 Social Ping', color: 0x99AAB5, description: 'Hoạt động giao lưu cộng đồng' }
+  { key: 'announcements', emoji: '📣', name: '📣 Announcement Ping', color: 0x5865F2, description: 'Thông báo quan trọng của server' },
+  { key: 'events', emoji: '🎉', name: '🔔 Event Ping', color: 0x57F287, description: 'Sự kiện và hoạt động cộng đồng' },
+  { key: 'giveaways', emoji: '🎁', name: '🎁 Giveaway Ping', color: 0xEB459E, description: 'Quà tặng và giveaway' },
+  { key: 'gaming', emoji: '🎮', name: '🎮 Game Ping', color: 0xFEE75C, description: 'Tìm team và hẹn giờ chơi game' },
+  { key: 'social', emoji: '💬', name: '💬 Social Ping', color: 0x99AAB5, description: 'Hoạt động giao lưu cộng đồng' }
 ];
 
 async function ensureNamedRole(guild, name, color = 0x99AAB5, permissions = []) {
   let role = guild.roles.cache.find(r => r.name === name);
   if (!role) role = await guild.roles.create({ name, color, permissions, reason: 'Aki automation setup' });
   return role;
+}
+
+function buildReactionRoleButtonRows() {
+  const buttons = REACTION_ROLE_CHOICES.map(choice => new ButtonBuilder()
+    .setCustomId('aki:rr:' + choice.key)
+    .setLabel(choice.emoji + ' ' + choice.name.replace(/^\\p{Extended_Pictographic}\\s*/u, '').slice(0, 70))
+    .setStyle(ButtonStyle.Secondary));
+  return [new ActionRowBuilder().addComponents(...buttons.slice(0, 5))];
+}
+
+function normalizeReactionEmoji(value) {
+  return String(value || '').normalize('NFC').replace(/\\uFE0F/g, '');
 }
 
 function buildSelfRoleRows() {
@@ -934,7 +946,7 @@ async function saveReactionRolePanel(guildId, channelId, messageId, bindings) {
       for (const binding of bindings) {
         await client.query(
           'INSERT INTO reaction_role_bindings(guild_id,message_id,emoji,role_id) VALUES($1,$2,$3,$4) ON CONFLICT(guild_id,message_id,emoji) DO UPDATE SET role_id=EXCLUDED.role_id',
-          [guildId, messageId, binding.emoji, binding.roleId]
+          [guildId, messageId, normalizeReactionEmoji(binding.emoji), binding.roleId]
         );
       }
       await client.query('COMMIT');
@@ -952,7 +964,7 @@ async function saveReactionRolePanel(guildId, channelId, messageId, bindings) {
   memory.reactionRolePanels.set(guildId, { guild_id: guildId, channel_id: channelId, message_id: messageId });
   for (const binding of bindings) {
     memory.reactionRoleBindings.set(`${guildId}:${messageId}:${binding.emoji}`, {
-      guildId, messageId, emoji: binding.emoji, role_id: binding.roleId
+      guildId, messageId, emoji: normalizeReactionEmoji(binding.emoji), role_id: binding.roleId
     });
   }
 }
@@ -960,7 +972,7 @@ async function getReactionRoleBinding(guildId, messageId, emoji) {
   if (pool) {
     const result = await dbQuery(
       'SELECT role_id FROM reaction_role_bindings WHERE guild_id=$1 AND message_id=$2 AND emoji=$3',
-      [guildId, messageId, emoji]
+      [guildId, messageId, normalizeReactionEmoji(emoji)]
     );
     return result?.rows?.[0] || null;
   }
@@ -972,7 +984,8 @@ function parseReactionRoleBindingFromMessage(message, emoji) {
   if (!message?.author?.id || message.author.id !== bot.user?.id) return null;
   const embed = message?.embeds?.find(item => String(item.footer?.text || '').includes('Reaction Roles'));
   if (!embed?.description) return null;
-  const line = embed.description.split('\n').find(item => item.trimStart().startsWith(emoji));
+  const targetEmoji = normalizeReactionEmoji(emoji);
+  const line = embed.description.split('\n').find(item => normalizeReactionEmoji(item.trimStart()).startsWith(targetEmoji));
   const roleId = line?.match(/<@&(\d{17,20})>/)?.[1];
   return roleId ? { role_id: roleId } : null;
 }
@@ -1013,13 +1026,13 @@ async function setupRolePanel(guild, channel, actorId) {
     .setColor(0x5865F2)
     .setTitle('🎭 Chọn role ping của bạn')
     .setDescription([
-      'Chạm vào emoji tương ứng để **nhận role**; gỡ reaction để **gỡ role**.',
+      'Thêm reaction emoji hoặc nhấn nút emoji tương ứng để **nhận/gỡ role**.',
       '👥 Muốn tự gán Member cho người mới, hãy chọn 👥 Member trong mục Auto-role trên dashboard.',
       '',
       ...roles.map(choice => `${choice.emoji} **${choice.name}** — ${choice.description} (<@&${choice.role.id}>)`)
     ].join('\n'))
     .setFooter({ text: 'Aki Dev · Reaction Roles' });
-  const message = await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+  const message = await channel.send({ embeds: [embed], components: buildReactionRoleButtonRows(), allowedMentions: { parse: [] } });
   const bindings = roles.map(choice => ({ emoji: choice.emoji, roleId: choice.role.id }));
   try {
     // Finish the visible panel before switching the stored mapping; don't strand users on a partial panel.
@@ -1082,6 +1095,30 @@ async function handleAkiButton(interaction) {
   const customId = interaction.customId || '';
   if (!customId.startsWith('aki:') || !interaction.guild) return false;
   const guild = interaction.guild;
+  if (customId.startsWith('aki:rr:')) {
+    await interaction.deferReply({ ephemeral: true });
+    const key = customId.slice('aki:rr:'.length);
+    const spec = REACTION_ROLE_CHOICES.find(item => item.key === key);
+    if (!spec) { await interaction.editReply({ content: 'Role không hợp lệ.' }); return true; }
+    const member = await guild.members.fetch(interaction.user.id);
+    const roles = await guild.roles.fetch().catch(() => guild.roles.cache);
+    const role = roles.find(r => r.name === spec.name);
+    if (!role) { await interaction.editReply({ content: 'Role chưa tồn tại. Hãy đăng lại bảng nhận role từ dashboard.' }); return true; }
+    const me = guild.members.me || await guild.members.fetchMe();
+    if (!me.permissions.has(PermissionFlagsBits.ManageRoles)) { await interaction.editReply({ content: 'Bot thiếu quyền Manage Roles.' }); return true; }
+    if (role.position >= me.roles.highest.position) { await interaction.editReply({ content: 'Role ' + role.name + ' đang ở trên hoặc ngang role bot. Hãy đưa role bot lên cao hơn.' }); return true; }
+    const hadRole = member.roles.cache.has(role.id);
+    if (hadRole) {
+      await member.roles.remove(role, 'Reaction-role button removed');
+      await interaction.editReply({ content: '➖ Đã gỡ role ' + role.name + '.' });
+      await addActivity(guild.id, member.id, 'role:button-remove', role.name + ' · nút emoji').catch(() => {});
+    } else {
+      await member.roles.add(role, 'Reaction-role button selected');
+      await interaction.editReply({ content: '✅ Đã nhận role ' + role.name + '.' });
+      await addActivity(guild.id, member.id, 'role:button-add', role.name + ' · nút emoji').catch(() => {});
+    }
+    return true;
+  }
   if (customId.startsWith('aki:role:')) {
     const key = customId.slice('aki:role:'.length);
     const spec = SELF_ASSIGNABLE_ROLES.find(r => r.key === key);
@@ -1416,13 +1453,16 @@ async function applyReactionRole(reaction, user, shouldAdd) {
     if (!guild || !message.id) return;
     guildId = guild.id;
     emojiName = reaction.emoji?.name || 'unknown emoji';
-    // Fast-filter ordinary chat reactions before any database lookups.
+    // Fast-filter ordinary chat reactions before database lookups.
     if (message.author?.id !== bot.user?.id) return;
-    if (!message.embeds?.some(item => String(item.footer?.text || '').includes('Reaction Roles'))) return;
-    // Ignore any emoji that is not mapped to the current or a recoverable panel.
-    let binding = await getReactionRoleBinding(guild.id, message.id, emojiName);
-    // If no database is configured, restore mappings from the panel embed after a restart.
-    if (!binding) binding = parseReactionRoleBindingFromMessage(message, emojiName);
+    const isRolePanel = message.embeds?.some(item => String(item.footer?.text || '').includes('Reaction Roles'));
+    if (!isRolePanel) return;
+    // Resolve from the embed first, so a failed or stale DB mapping cannot block assignment.
+    let binding = parseReactionRoleBindingFromMessage(message, emojiName);
+    if (!binding) {
+      try { binding = await getReactionRoleBinding(guild.id, message.id, emojiName); }
+      catch (dbError) { console.warn('Reaction-role DB lookup failed; embed fallback used:', dbError.message); }
+    }
     if (!binding?.role_id) return;
 
     const role = await guild.roles.fetch(binding.role_id).catch(() => null);
