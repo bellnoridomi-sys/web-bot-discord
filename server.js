@@ -7,6 +7,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import { normalizeReactionEmoji, parseReactionRoleBindingFromMessage } from './lib/role-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
 import {
@@ -959,9 +960,6 @@ function buildReactionRoleButtonRows() {
   return [new ActionRowBuilder().addComponents(...buttons.slice(0, 5))];
 }
 
-function normalizeReactionEmoji(value) {
-  return String(value || '').normalize('NFC').replace(/\uFE0F/g, '');
-}
 
 function buildSelfRoleRows() {
   const buttons = SELF_ASSIGNABLE_ROLES.map(role => new ButtonBuilder().setCustomId('aki:role:' + role.key).setLabel(role.name).setStyle(ButtonStyle.Secondary));
@@ -1022,16 +1020,6 @@ async function getReactionRoleBinding(guildId, messageId, emoji) {
   return memory.reactionRoleBindings.get(`${guildId}:${messageId}:${emoji}`) || null;
 }
 
-function parseReactionRoleBindingFromMessage(message, emoji) {
-  // Only trust a panel authored by this bot; do not honor look-alike user/webhook embeds.
-  if (!message?.author?.id || message.author.id !== bot.user?.id) return null;
-  const embed = message?.embeds?.find(item => String(item.footer?.text || '').includes('Reaction Roles'));
-  if (!embed?.description) return null;
-  const targetEmoji = normalizeReactionEmoji(emoji);
-  const line = embed.description.split('\n').find(item => normalizeReactionEmoji(item.trimStart()).startsWith(targetEmoji));
-  const roleId = line?.match(/<@&(\d{17,20})>/)?.[1];
-  return roleId ? { role_id: roleId } : null;
-}
 
 async function setupRolePanel(guild, channel, actorId) {
   if (!channel?.isTextBased?.() || channel.guild?.id !== guild.id || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) {
@@ -1520,7 +1508,7 @@ async function applyReactionRole(reaction, user, shouldAdd) {
     const isRolePanel = message.embeds?.some(item => String(item.footer?.text || '').includes('Reaction Roles'));
     if (!isRolePanel) return;
     // Resolve from the embed first, so a failed or stale DB mapping cannot block assignment.
-    let binding = parseReactionRoleBindingFromMessage(message, emojiName);
+    let binding = parseReactionRoleBindingFromMessage(message, bot.user?.id, emojiName);
     if (!binding) {
       try { binding = await getReactionRoleBinding(guild.id, message.id, emojiName); }
       catch (dbError) { console.warn('Reaction-role DB lookup failed; embed fallback used:', dbError.message); }
