@@ -1268,7 +1268,10 @@ async function applyReactionRole(reaction, user, shouldAdd) {
     if (!guild || !message.id) return;
     guildId = guild.id;
     emojiName = reaction.emoji?.name || 'unknown emoji';
-    // Ignore all other reactions: only mappings persisted for the selected panel are actionable.
+    // Fast-filter ordinary chat reactions before any database lookups.
+    if (message.author?.id !== bot.user?.id) return;
+    if (!message.embeds?.some(item => String(item.footer?.text || '').includes('Reaction Roles'))) return;
+    // Ignore any emoji that is not mapped to the current or a recoverable panel.
     let binding = await getReactionRoleBinding(guild.id, message.id, emojiName);
     // If no database is configured, restore mappings from the panel embed after a restart.
     if (!binding) binding = parseReactionRoleBindingFromMessage(message, emojiName);
