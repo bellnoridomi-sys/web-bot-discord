@@ -1302,24 +1302,29 @@ bot.on('messageCreate', async message => {
   if (!message.guild || message.author.bot) return;
   if (/^\+legit(?:\s|$)/i.test(message.content.trim())) {
     try {
-      const match = message.content.trim().match(/^\+legit\s+(?:<@!?(\d{17,20})>|(\d{17,20}))\s*$/i);
+      const match = message.content.trim().match(/^\+legit(?:\s+\+?\s*(?:<@!?(\d{17,20})>|(\d{17,20})))?\s*$/i);
       if (!match) {
-        await message.reply('Dùng +legit @1393847310949290026 để gắn ✅ vào đúng tin nhắn lệnh.').catch(() => {});
+        await message.reply('Use +legit or +legit @1393847310949290026.').catch(() => {});
         return;
       }
-      const targetId = match[1] || match[2];
-      if (targetId !== LEGIT_TARGET_USER_ID) {
-        throw new Error('Lệnh +legit này chỉ áp dụng cho tài khoản đã cấu hình.');
+      const targetId = match[1] || match[2] || null;
+      const isConfiguredAccount = message.author.id === LEGIT_TARGET_USER_ID;
+      if (!isConfiguredAccount && targetId !== LEGIT_TARGET_USER_ID) {
+        throw new Error('Only the configured account or a staff member targeting that ID can trigger +legit.');
       }
-      const targetMember = await message.guild.members.fetch(targetId).catch(() => null);
-      if (!targetMember) throw new Error('Tài khoản mục tiêu chưa ở trong server này.');
-      const actor = message.member || await fetchGuildMember(message.guild, message.author.id);
-      ensureMemberPermission(actor, PermissionFlagsBits.ManageRoles);
+      if (!isConfiguredAccount) {
+        const actor = message.member || await fetchGuildMember(message.guild, message.author.id);
+        ensureMemberPermission(actor, PermissionFlagsBits.ManageRoles);
+      }
+      if (targetId) {
+        const targetMember = await message.guild.members.fetch(targetId).catch(() => null);
+        if (!targetMember) throw new Error('The configured account is not a member of this server.');
+      }
       await message.react('✅');
-      await addActivity(message.guild.id, message.author.id, '+legit:reaction', '✅ Đã thả reaction vào lệnh +legit nhắc <@' + targetId + '> tại #' + message.channel.name + '.');
+      await addActivity(message.guild.id, message.author.id, '+legit:reaction', '✅ Reacted to +legit command in #' + message.channel.name + '.');
     } catch (error) {
       await message.reply('⚠️ ' + error.message).catch(() => {});
-      addActivity(message.guild.id, message.author.id, 'error:+legit', '❌ +legit thất bại: ' + error.message).catch(() => {});
+      addActivity(message.guild.id, message.author.id, 'error:+legit', '❌ +legit failed: ' + error.message).catch(() => {});
     }
     return;
   }
