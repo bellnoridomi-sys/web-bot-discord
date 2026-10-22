@@ -252,7 +252,7 @@ async function reportRuntimeError(error, source = 'runtime', guildId = null) {
   if (!bot.isReady()) return;
   const guilds = guildId
     ? [bot.guilds.cache.get(guildId)].filter(Boolean)
-    : [...bot.guilds.cache.values()].slice(0, 8);
+    : [...bot.guilds.cache.values()].slice(0, 25);
   for (const guild of guilds) {
     try {
       const config = await getConfig(guild.id).catch(() => null);
@@ -1548,6 +1548,7 @@ async function applyReactionRole(reaction, user, shouldAdd) {
   } catch (error) {
     const message = String(error?.message || 'unknown error');
     console.warn('Reaction-role handler failed:', { guildId, userId: user.id, emoji: emojiName, add: shouldAdd, error: message });
+    void reportRuntimeError(error, shouldAdd ? 'reaction-role-add' : 'reaction-role-remove', guildId);
     if (guildId) {
       await addActivity(guildId, user.id, 'error:reaction-role',
         (shouldAdd ? 'Không thể cấp role' : 'Không thể gỡ role') + ' bằng emoji ' + emojiName + ': ' + message).catch(() => {});
@@ -2187,6 +2188,8 @@ setInterval(() => {
   const now = Date.now();
   for (const [sid, session] of sessionStore) if (now - session.lastSeen > 7 * 24 * 60 * 60_000) sessionStore.delete(sid);
   for (const [state, obj] of oauthStateStore) if (now - obj.createdAt > 10 * 60_000) oauthStateStore.delete(state);
+  for (const [key, last] of xpCooldowns) if (now - last > 30 * 60_000) xpCooldowns.delete(key);
+  for (const [key, last] of runtimeErrorCooldowns) if (now - last > 10 * 60_000) runtimeErrorCooldowns.delete(key);
   if (pool) dbQuery('DELETE FROM oauth_states WHERE created_at < $1', [now - 10 * 60_000]).catch(error => console.error('OAuth state cleanup failed:', error.message));
 }, 10 * 60_000);
 setInterval(() => {
