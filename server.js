@@ -245,6 +245,7 @@ async function sendActivityToDiscord(row) {
 async function reportRuntimeError(error, source = 'runtime', guildId = null) {
   const text = String(error?.stack || error?.message || error || 'Unknown runtime error').slice(0, 3500);
   const message = String(error?.message || error || 'Unknown runtime error').slice(0, 500);
+  const safeText = text.replace(/```/g, '``\u200b`').replace(/(token|secret|password)(\s*[:=]\s*)\S+/gi, '$1$2[REDACTED]').slice(0, 3800);
   console.error('[runtime-error]', source, guildId || 'global', text);
   const key = `${source}:${guildId || 'global'}:${message}`;
   const now = Date.now();
@@ -266,7 +267,7 @@ async function reportRuntimeError(error, source = 'runtime', guildId = null) {
       const embed = new EmbedBuilder()
         .setColor(0xED4245)
         .setTitle('🚨 Aki Runtime Error · ' + String(source).slice(0, 180))
-        .setDescription('```text\\n' + text.replace(/```/g, '\`\u200b\`\u200b\`').slice(0, 3800) + '\\n```')
+        .setDescription('```text\n' + safeText + '\n```')
         .addFields({ name: 'Server', value: guild.name.slice(0, 100), inline: true }, { name: 'Time', value: `<t:${Math.floor(now / 1000)}:F>`, inline: true })
         .setFooter({ text: 'Automatic diagnostic log · do not share tokens/secrets' });
       await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
