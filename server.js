@@ -7,7 +7,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
-import { normalizeReactionEmoji } from './lib/role-utils.js';
+import { normalizeReactionEmoji, isActiveReactionRolePanel } from './lib/role-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
 import {
@@ -1591,7 +1591,7 @@ async function applyReactionRole(reaction, user, shouldAdd) {
     // Only the currently configured reaction-role panel may assign roles.
     if (message.author?.id !== bot.user?.id) return;
     const panel = await getReactionRolePanel(guild.id);
-    if (!panel || panel.message_id !== message.id || (panel.channel_id && panel.channel_id !== message.channelId)) return;
+    if (!isActiveReactionRolePanel(panel, message)) return;
     let binding;
     try { binding = await getReactionRoleBinding(guild.id, message.id, emojiName); }
     catch (dbError) {
