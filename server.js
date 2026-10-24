@@ -458,12 +458,60 @@ function getSession(req) {
   if (session) session.lastSeen = Date.now();
   return session;
 }
+function sessionEncryptionKey() {
+  const secret = process.env.SESSION_ENCRYPTION_KEY || process.env.DISCORD_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '';
+  return secret ? crypto.createHash('sha256').update(secret, 'utf8').digest() : null;
+}
 function sessionForStorage(session) {
   const stored = { ...session };
+  const previousCipher = stored.discordOAuthTokens;
   delete stored.discordAccessToken;
   delete stored.discordRefreshToken;
   delete stored.discordTokenExpiresAt;
+  delete stored.discordOAuthTokens;
+  const tokens = {
+    accessToken: session.discordAccessToken || null,
+    refreshToken: session.discordRefreshToken || null,
+    expiresAt: Number(session.discordTokenExpiresAt) || 0
+  };
+  const key = sessionEncryptionKey();
+  if (key && (tokens.accessToken || tokens.refreshToken)) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify(tokens), 'utf8'), cipher.final()]);
+    stored.discordOAuthTokens = {
+      version: 1,
+      iv: iv.toString('base64'),
+      tag: cipher.getAuthTag().toString('base64'),
+      data: encrypted.toString('base64')
+    };
+  } else if (previousCipher) {
+    stored.discordOAuthTokens = previousCipher;
+  }
   return stored;
+}
+function restoreSessionFromStorage(saved) {
+  const session = { ...saved };
+  const envelope = session.discordOAuthTokens;
+  delete session.discordOAuthTokens;
+  if (!envelope || envelope.version !== 1) return session;
+  const key = sessionEncryptionKey();
+  if (!key) return session;
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
+    const plain = Buffer.concat([
+      decipher.update(Buffer.from(envelope.data, 'base64')),
+      decipher.final()
+    ]).toString('utf8');
+    const tokens = JSON.parse(plain);
+    if (tokens.accessToken) session.discordAccessToken = tokens.accessToken;
+    if (tokens.refreshToken) session.discordRefreshToken = tokens.refreshToken;
+    if (tokens.expiresAt) session.discordTokenExpiresAt = Number(tokens.expiresAt);
+  } catch {
+    console.warn('Could not decrypt a stored Discord OAuth token; the user may need to log in again.');
+  }
+  return session;
 }
 async function persistSession(sid) {
   if (!pool || !sid) return;
@@ -485,7 +533,7 @@ async function restorePersistentSessions() {
   for (const row of result?.rows || []) {
     const session = row.session_data;
     if (!row.sid || !session?.user || !Array.isArray(session.guilds)) continue;
-    sessionStore.set(row.sid, session);
+    sessionStore.set(row.sid, restoreSessionFromStorage(session));
   }
   console.log(`Restored ${sessionStore.size} login session(s) from PostgreSQL.`);
 }
@@ -2230,6 +2278,7 @@ setInterval(reminderTick, 10_000);
 async function boot() {
   await initDb();
   await restorePersistentSessions();
+  await persistAllSessions(); // migrate any legacy plaintext OAuth fields to encrypted storage
   if (!pool) console.warn('DATABASE_URL missing. Login sessions will not survive Render restarts; configure a Render PostgreSQL DATABASE_URL.');
   server.listen(PORT, '0.0.0.0', () => console.log(`Aki Dev dashboard listening on 0.0.0.0:${PORT}`));
   if (process.env.DISCORD_TOKEN) {
