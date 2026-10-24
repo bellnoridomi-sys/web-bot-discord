@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan } from '../lib/role-utils.js';
 import { isAllowedOrigin } from '../lib/security-utils.js';
+import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS } from '../lib/ticket-utils.js';
 
 const panel = { channel_id: '222222222222222222', message_id: '333333333333333333' };
 const activeMessage = { channelId: panel.channel_id, id: panel.message_id };
@@ -64,4 +65,19 @@ test('hierarchy helper requires actor highest role above target', () => {
   assert.equal(isRoleHigherThan(high, equal), false);
   assert.equal(isRoleHigherThan(low, high), false);
   assert.equal(isRoleHigherThan(null, high), false);
+});
+
+test('closed ticket topic no longer blocks the owner from opening a new ticket', () => {
+  const owner = '123456789012345678';
+  const openTopic = 'aki-ticket-owner=' + owner;
+  const closedTopic = openTopic + ';aki-ticket-status=closed;aki-ticket-closed-at=1700000000000';
+  assert.equal(isOpenAkiTicket(openTopic, owner), true);
+  assert.equal(isOpenAkiTicket(closedTopic, owner), false);
+  assert.deepEqual(parseAkiTicketTopic(closedTopic), { ownerId: owner, status: 'closed', closedAt: 1700000000000 });
+});
+test('closed ticket retention timer is bounded by seven days', () => {
+  const closedAt = 1_700_000_000_000;
+  assert.equal(ticketDeletionDelay(closedAt, closedAt), TICKET_RETENTION_MS);
+  assert.equal(ticketDeletionDelay(closedAt, closedAt + TICKET_RETENTION_MS), 0);
+  assert.equal(ticketDeletionDelay(null), null);
 });

@@ -23,6 +23,7 @@ jobs:
           node --check public/script.js
           node --check lib/role-utils.js
           node --check lib/security-utils.js
+          node --check lib/ticket-utils.js
           node --test tests/*.test.js
       - name: Check root and public bundles stay synchronized
         run: |

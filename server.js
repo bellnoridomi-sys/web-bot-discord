@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan } from './lib/role-utils.js';
 import { isAllowedOrigin } from './lib/security-utils.js';
+import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
 import {
@@ -19,6 +20,7 @@ import {
   PermissionsBitField,
   ChannelType,
   EmbedBuilder,
+  AttachmentBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -71,6 +73,7 @@ const activityCache = [];
 const xpCooldowns = new Map();
 const runtimeErrorCooldowns = new Map();
 const memoryReminderCounts = new Map();
+const voiceReconnectTimers = new Map();
 const memory = {
   configs: new Map(),
   warnings: new Map(),
@@ -997,6 +1000,11 @@ function ensureRoleBelowInvoker(actor, role) {
 async function joinGuildVoice(guild, channelId, source = 'manual') {
   const channel = await guild.channels.fetch(channelId);
   if (!channel || ![ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(channel.type)) throw new Error('Voice channel không hợp lệ.');
+  const scheduled = voiceReconnectTimers.get(guild.id);
+  if (scheduled) { clearTimeout(scheduled); voiceReconnectTimers.delete(guild.id); }
+  const existing = getVoiceConnection(guild.id);
+  if (existing && existing.state.status !== VoiceConnectionStatus.Destroyed && existing.__aki?.channelId === channel.id) return channel;
+  if (existing && existing.state.status !== VoiceConnectionStatus.Destroyed) existing.destroy();
   const me = guild.members.me || await guild.members.fetchMe();
   if (!channel.joinable || !channel.permissionsFor(me)?.has(PermissionFlagsBits.Connect)) throw new Error('Bot không có quyền Connect vào voice này.');
   const connection = joinVoiceChannel({ guildId: guild.id, channelId: channel.id, adapterCreator: guild.voiceAdapterCreator, selfDeaf: true, selfMute: true });
@@ -1007,6 +1015,20 @@ async function joinGuildVoice(guild, channelId, source = 'manual') {
   await setConfig(guild.id, { auto_voice_channel_id: source === 'auto' ? channel.id : (await getConfig(guild.id)).auto_voice_channel_id });
   io.to('guild:' + guild.id).emit('bot-status', { type: 'voice', guildId: guild.id, channelId: channel.id, connected: true });
   return channel;
+}
+
+function scheduleAutoVoiceReconnect(guild, channelId, delay = 3_000) {
+  if (!guild || !channelId || voiceReconnectTimers.has(guild.id)) return;
+  const active = getVoiceConnection(guild.id);
+  if (active && active.state.status !== VoiceConnectionStatus.Destroyed && active.__aki?.channelId === channelId) return;
+  const timer = setTimeout(() => {
+    voiceReconnectTimers.delete(guild.id);
+    const current = getVoiceConnection(guild.id);
+    if (current && current.state.status !== VoiceConnectionStatus.Destroyed) return;
+    joinGuildVoice(guild, channelId, 'auto').catch(error => console.error('Auto voice reconnect failed:', error.message));
+  }, delay);
+  voiceReconnectTimers.set(guild.id, timer);
+  timer.unref?.();
 }
 
 function attachVoiceRecovery(guild, connection) {
@@ -1023,9 +1045,7 @@ function attachVoiceRecovery(guild, connection) {
     } catch {
       connection.destroy();
       const cfg = await getConfig(guild.id);
-      if (cfg.auto_voice_enabled && cfg.auto_voice_channel_id === meta.channelId) {
-        setTimeout(() => joinGuildVoice(guild, meta.channelId, 'auto').catch(e => console.error('Voice reconnect failed:', e.message)), 3_000);
-      }
+      if (cfg.auto_voice_enabled && cfg.auto_voice_channel_id === meta.channelId) scheduleAutoVoiceReconnect(guild, meta.channelId, 3_000);
     }
   });
   connection.on(VoiceConnectionStatus.Destroyed, () => io.to('guild:' + guild.id).emit('bot-status', { type: 'voice', guildId: guild.id, connected: false }));
@@ -1224,6 +1244,58 @@ async function setupTicketPanel(guild, channel, actorId) {
   return message;
 }
 
+function scheduleClosedTicketDeletion(channel, closedAt) {
+  const delay = ticketDeletionDelay(closedAt);
+  if (delay === null) return;
+  const timer = setTimeout(() => {
+    channel.delete('Aki ticket retention expired').catch(error => console.warn('Closed ticket auto-delete failed:', error.message));
+  }, delay);
+  timer.unref?.();
+}
+
+async function sendTicketTranscript(channel, ownerId, closedBy) {
+  const messages = [];
+  let before;
+  for (let page = 0; page < 5; page++) {
+    const batch = await channel.messages.fetch(before ? { limit: 100, before } : { limit: 100 });
+    if (!batch.size) break;
+    messages.push(...batch.values());
+    before = batch.last()?.id;
+    if (batch.size < 100) break;
+  }
+  messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+  const lines = [
+    'Aki Dev · Ticket transcript',
+    'Guild: ' + channel.guild.name + ' (' + channel.guild.id + ')',
+    'Channel: #' + channel.name + ' (' + channel.id + ')',
+    'Owner: ' + ownerId,
+    'Closed by: ' + closedBy,
+    'Exported: ' + new Date().toISOString(),
+    ''
+  ];
+  for (const message of messages) {
+    const body = String(message.content || '').replace(/\r/g, '');
+    const attachments = [...message.attachments.values()].map(item => item.url);
+    lines.push('[' + new Date(message.createdTimestamp).toISOString() + '] ' +
+      (message.author?.tag || message.author?.username || 'Unknown') + ' (' + message.author?.id + '): ' +
+      (body || '[no text]') + (attachments.length ? '\nAttachments: ' + attachments.join(' ') : ''));
+  }
+  let transcript = lines.join('\n');
+  if (transcript.length > 1_000_000) transcript = transcript.slice(-1_000_000);
+  const config = await getConfig(channel.guild.id).catch(() => null);
+  const logChannel = (config?.log_channel_id ? await channel.guild.channels.fetch(config.log_channel_id).catch(() => null) : null) ||
+    channel.guild.channels.cache.find(item => item.isTextBased?.() && item.name === '🧾・staff-log');
+  if (!logChannel?.isTextBased?.()) return false;
+  const me = channel.guild.members.me || await channel.guild.members.fetchMe();
+  if (!logChannel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles])) return false;
+  await logChannel.send({
+    content: '📄 Transcript của #' + channel.name + ' · ticket owner <@' + ownerId + '> · đóng bởi <@' + closedBy + '>',
+    files: [new AttachmentBuilder(Buffer.from(transcript, 'utf8'), { name: 'ticket-' + channel.id + '-transcript.txt' })],
+    allowedMentions: { parse: [] }
+  });
+  return true;
+}
+
 async function handleAkiButton(interaction) {
   const customId = interaction.customId || '';
   if (!customId.startsWith('aki:') || !interaction.guild) return false;
@@ -1269,7 +1341,7 @@ async function handleAkiButton(interaction) {
   if (customId === 'aki:ticket:create') {
     const member = await guild.members.fetch(interaction.user.id);
     await guild.channels.fetch();
-    const existing = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.topic === 'aki-ticket-owner=' + member.id);
+    const existing = guild.channels.cache.find(c => c.type === ChannelType.GuildText && isOpenAkiTicket(c.topic, member.id));
     if (existing) { await interaction.reply({ content: 'Bạn đã có ticket đang mở: ' + existing.toString(), ephemeral: true }); return true; }
     const { category, staffRoles, me } = await ensureTicketCategory(guild);
     const slug = String(member.user.username || 'member').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'member';
@@ -1294,10 +1366,13 @@ async function handleAkiButton(interaction) {
     const canClose = member.id === ownerMatch[1] || member.permissions.has(PermissionFlagsBits.ManageChannels) || member.permissions.has(PermissionFlagsBits.ManageGuild);
     if (!canClose) { await interaction.reply({ content: 'Chỉ người mở ticket hoặc staff có quyền quản lý kênh mới được đóng ticket.', ephemeral: true }); return true; }
     await interaction.reply({ content: '🔒 Đang đóng ticket…', ephemeral: true });
+    const closedAt = Date.now();
+    await sendTicketTranscript(channel, ownerMatch[1], interaction.user.id).catch(error => console.warn('Ticket transcript could not be saved:', error.message));
     await channel.permissionOverwrites.edit(ownerMatch[1], { ViewChannel: false, SendMessages: false }).catch(() => {});
-    await channel.setTopic('aki-ticket-owner=' + ownerMatch[1] + ';aki-ticket-status=closed').catch(() => {});
+    await channel.setTopic('aki-ticket-owner=' + ownerMatch[1] + ';aki-ticket-status=closed;aki-ticket-closed-at=' + closedAt).catch(() => {});
     if (!channel.name.startsWith('closed-')) await channel.setName(('closed-' + channel.name).slice(0, 100)).catch(() => {});
-    await addActivity(guild.id, interaction.user.id, 'ticket:closed', 'Đã đóng #' + channel.name + '.').catch(() => {});
+    scheduleClosedTicketDeletion(channel, closedAt);
+    await addActivity(guild.id, interaction.user.id, 'ticket:closed', 'Đã đóng #' + channel.name + '. Transcript đã được gửi vào kênh log (nếu cấu hình). Xoá tự động sau 7 ngày.').catch(() => {});
     return true;
   }
   return false;
@@ -1596,6 +1671,11 @@ bot.on('ready', async () => {
     }
   } catch (error) { console.error('Command registration failed:', error); }
   for (const guild of bot.guilds.cache.values()) {
+    await guild.channels.fetch().catch(() => {});
+    for (const channel of guild.channels.cache.values()) {
+      const ticket = parseAkiTicketTopic(channel.topic);
+      if (ticket.status === 'closed' && ticket.closedAt) scheduleClosedTicketDeletion(channel, ticket.closedAt);
+    }
     const cfg = await getConfig(guild.id);
     if (cfg.auto_voice_enabled && cfg.auto_voice_channel_id) joinGuildVoice(guild, cfg.auto_voice_channel_id, 'auto').catch(e => console.error(`Auto voice ${guild.id}:`, e.message));
   }
@@ -1679,13 +1759,13 @@ bot.on('interactionCreate', async interaction => {
     }
   }
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
-  const slowCommands = new Set(['role-panel', 'ticket-setup', 'auto-voice', 'vc-join']);
+  const ephemeralCommands = new Set(['warnings', 'role', 'warn', 'kick', 'ban', 'timeout', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
   try {
-    if (slowCommands.has(interaction.commandName)) await interaction.deferReply({ ephemeral: true });
+    // Acknowledge all slash commands before doing network/database work.
+    await interaction.deferReply({ ephemeral: ephemeralCommands.has(interaction.commandName) });
     const args = extractInteractionArgs(interaction);
     const payload = await runCommand(interaction.commandName, { guild: interaction.guild, userId: interaction.user.id, userName: interaction.user.globalName || interaction.user.username, channel: interaction.channel, args, source: 'discord' });
-    if (interaction.deferred) await interaction.editReply(payload);
-    else await interaction.reply(payload);
+    await interaction.editReply(payload);
     if (interaction.commandName === 'poll') { const sent = await interaction.fetchReply(); await addPollReactions(sent, [args.option1,args.option2,args.option3,args.option4].filter(Boolean).length); }
     await addActivity(interaction.guildId, interaction.user.id, `/${interaction.commandName}`, `✅ Slash command bởi ${interaction.user.globalName || interaction.user.username} tại #${interaction.channel?.name || 'unknown-channel'}.`);
   } catch (error) {
@@ -1826,7 +1906,7 @@ bot.on('voiceStateUpdate', async (oldState, newState) => {
   if (!bot.user || newState.id !== bot.user.id) return;
   const cfg = await getConfig(newState.guild.id);
   if (cfg.auto_voice_enabled && cfg.auto_voice_channel_id && !newState.channelId) {
-    setTimeout(() => joinGuildVoice(newState.guild, cfg.auto_voice_channel_id, 'auto').catch(() => {}), 4_000);
+    scheduleAutoVoiceReconnect(newState.guild, cfg.auto_voice_channel_id, 4_000);
   }
 });
 

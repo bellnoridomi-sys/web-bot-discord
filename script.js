@@ -49,7 +49,7 @@ async function loadGuild(){
  try{
   const d=await fetchJson(`/api/guilds/${state.guild.id}/config`);state.config=d.config;
   const autoSelect=$('autoRoleSelect');if(autoSelect){autoSelect.innerHTML='<option value="">Tắt auto-role</option>'+(d.roles||[]).map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');autoSelect.value=d.config.auto_role_id||''}
-  $('metricMembers').textContent=d.stats.members;$('metricChannels').textContent=d.stats.channels;$('metricPing').textContent=`${d.stats.ping}ms`;$('metricCommands').textContent=state.me.bot?.commands||29;$('autoVoice').checked=!!d.config.auto_voice_enabled;
+  $('metricMembers').textContent=d.stats.members;$('metricChannels').textContent=d.stats.channels;$('metricPing').textContent=`${d.stats.ping}ms`;$('metricCommands').textContent=state.me.bot?.commands??COMMANDS.length;$('autoVoice').checked=!!d.config.auto_voice_enabled;
   await loadChannels();await loadAfk();await refreshActivity();watchCurrentGuild();
  }catch(e){flash('responseBox',e.message,true)}
 }
