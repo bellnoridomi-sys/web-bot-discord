@@ -50,7 +50,9 @@ jobs:
           assert.ok(server.includes("message.react('✅')"), 'Missing +legit reaction');
           assert.ok(server.includes("aki:rr:"), 'Missing emoji button fallback for role selection');
           assert.ok(server.includes('normalizeReactionEmoji'), 'Missing Unicode emoji normalization');
-          assert.ok(server.includes('parseReactionRoleBindingFromMessage(message, bot.user?.id, emojiName)'), 'Reaction handler must resolve roles from the message embed first');
+          assert.ok(server.includes('isActiveReactionRolePanel(panel, message)'), 'Reaction handler must check the active panel message ID');
+          assert.ok(server.includes('getReactionRoleBinding(guild.id, message.id, emojiName)'), 'Reaction handler must use the configured database binding');
+          assert.ok(!server.includes('parseReactionRoleBindingFromMessage'), 'Reaction roles must never be parsed from embed text');
           assert.ok(server.includes("process.on('unhandledRejection'"), 'Missing runtime error reporting hook');
           assert.ok(server.includes("bot.on('error'"), 'Missing Discord client error reporting hook');
           assert.ok(server.includes('CREATE TABLE IF NOT EXISTS community_profiles'), 'Missing persistent community profile table');
@@ -58,13 +60,13 @@ jobs:
             assert.ok(server.includes(`setName('${name}')`), `Missing slash command: ${name}`);
           }
           const legitPattern = /^\+legit(?:\s+\+?\s*(?:<@!?(\d{17,20})>|@?(\d{17,20})))?\s*$/i;
-          const targetId = '1393847310949290026';
+          const targetId = '123456789012345678';
           for (const [input, expected] of [
             ['+legit', null],
-            ['+legit + <@1393847310949290026>', targetId],
-            ['+legit <@!1393847310949290026>', targetId],
-            ['+legit + @1393847310949290026', targetId],
-            ['+legit + 1393847310949290026', targetId]
+            ['+legit + <@123456789012345678>', targetId],
+            ['+legit <@!123456789012345678>', targetId],
+            ['+legit + @123456789012345678', targetId],
+            ['+legit + 123456789012345678', targetId]
           ]) {
             const match = input.match(legitPattern);
             assert.ok(match, `+legit syntax should parse: ${input}`);
