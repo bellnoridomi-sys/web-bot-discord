@@ -7,7 +7,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
-import { normalizeReactionEmoji, parseReactionRoleBindingFromMessage } from './lib/role-utils.js';
+import { normalizeReactionEmoji } from './lib/role-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
 import {
@@ -36,10 +36,10 @@ import {
 const { Pool } = pg;
 const app = express();
 const server = http.createServer(app);
-const io = new SocketIOServer(server, { cors: { origin: true, credentials: true } });
 const PORT = Number(process.env.PORT || 10000);
 const isProd = process.env.NODE_ENV === 'production';
 const SITE_URL = (process.env.SITE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+const io = new SocketIOServer(server, { cors: { origin: SITE_URL, credentials: true } });
 const APP_NAME = process.env.APP_NAME || 'Aki Dev';
 const SESSION_COOKIE = 'aki_sid';
 const INTERNAL_PREFIX = 'aki';
@@ -857,8 +857,8 @@ const commands = [
   new SlashCommandBuilder().setName('ticket-setup').setDescription('Đăng bảng mở ticket hỗ trợ.').setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh đăng bảng ticket').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(false)),
   new SlashCommandBuilder().setName('role-panel').setDescription('Đăng bảng tự nhận role bằng nút emoji.').setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh đăng bảng role').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(false)),
   new SlashCommandBuilder().setName('announce').setDescription('Đăng thông báo đẹp.').setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages.toString()).addStringOption(o => o.setName('message').setDescription('Nội dung').setRequired(true)),
-  new SlashCommandBuilder().setName('vc-join').setDescription('Bot vào voice.').setDefaultMemberPermissions(PermissionFlagsBits.Connect.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh voice').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(true)),
-  new SlashCommandBuilder().setName('vc-leave').setDescription('Bot rời voice.').setDefaultMemberPermissions(PermissionFlagsBits.Connect.toString()),
+  new SlashCommandBuilder().setName('vc-join').setDescription('Bot vào voice.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh voice').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(true)),
+  new SlashCommandBuilder().setName('vc-leave').setDescription('Bot rời voice.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
   new SlashCommandBuilder().setName('auto-voice').setDescription('Bật/tắt tự động giữ voice.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addBooleanOption(o => o.setName('enabled').setDescription('Bật hoặc tắt').setRequired(true)).addChannelOption(o => o.setName('channel').setDescription('Kênh voice').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(false)),
   new SlashCommandBuilder().setName('welcome-setup').setDescription('Chọn kênh chào thành viên mới.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh chào mừng').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true)),
   new SlashCommandBuilder().setName('goodbye-setup').setDescription('Chọn kênh thông báo thành viên rời server.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh tạm biệt').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
@@ -892,6 +892,23 @@ function ensureMemberPermission(member, permission) {
   if (member.id === member.guild.ownerId || member.permissions.has(permission)) return;
   throw new Error(`Bạn cần quyền **${new PermissionsBitField(permission).toArray().join(', ')}** để dùng tính năng này.`);
 }
+function ensureTargetBelowInvoker(actor, target, action = 'thao tác này') {
+  if (!actor || !target) throw new Error('Không xác định được người thực hiện hoặc thành viên mục tiêu.');
+  const guild = actor.guild;
+  if (actor.id === guild.ownerId) return;
+  if (target.id === guild.ownerId) throw new Error('Không thể thực hiện thao tác với chủ server.');
+  if (target.id === actor.id) throw new Error('Bạn không thể dùng lệnh này lên chính mình.');
+  if (target.roles.highest.comparePositionTo(actor.roles.highest) >= 0) {
+    throw new Error(`Role cao nhất của mục tiêu phải thấp hơn role cao nhất của bạn để ${action}.`);
+  }
+}
+function ensureRoleBelowInvoker(actor, role) {
+  if (!actor || !role) throw new Error('Không xác định được người thực hiện hoặc role.');
+  if (role.managed || role.id === actor.guild.id) throw new Error('Không thể tự gán/gỡ role @everyone hoặc role do tích hợp quản lý.');
+  if (actor.id !== actor.guild.ownerId && role.comparePositionTo(actor.roles.highest) >= 0) {
+    throw new Error('Role cần gán/gỡ phải thấp hơn role cao nhất của bạn.');
+  }
+}
 
 async function joinGuildVoice(guild, channelId, source = 'manual') {
   const channel = await guild.channels.fetch(channelId);
@@ -904,7 +921,7 @@ async function joinGuildVoice(guild, channelId, source = 'manual') {
   connection.__aki = { guildId: guild.id, channelId: channel.id, source };
   attachVoiceRecovery(guild, connection);
   await setConfig(guild.id, { auto_voice_channel_id: source === 'auto' ? channel.id : (await getConfig(guild.id)).auto_voice_channel_id });
-  io.emit('bot-status', { type: 'voice', guildId: guild.id, channelId: channel.id, connected: true });
+  io.to('guild:' + guild.id).emit('bot-status', { type: 'voice', guildId: guild.id, channelId: channel.id, connected: true });
   return channel;
 }
 
@@ -927,7 +944,7 @@ function attachVoiceRecovery(guild, connection) {
       }
     }
   });
-  connection.on(VoiceConnectionStatus.Destroyed, () => io.emit('bot-status', { type: 'voice', guildId: guild.id, connected: false }));
+  connection.on(VoiceConnectionStatus.Destroyed, () => io.to('guild:' + guild.id).emit('bot-status', { type: 'voice', guildId: guild.id, connected: false }));
 }
 
 const SELF_ASSIGNABLE_ROLES = [
@@ -1005,7 +1022,7 @@ async function saveReactionRolePanel(guildId, channelId, messageId, bindings) {
   }
   memory.reactionRolePanels.set(guildId, { guild_id: guildId, channel_id: channelId, message_id: messageId });
   for (const binding of bindings) {
-    memory.reactionRoleBindings.set(`${guildId}:${messageId}:${binding.emoji}`, {
+    memory.reactionRoleBindings.set(`${guildId}:${messageId}:${normalizeReactionEmoji(binding.emoji)}`, {
       guildId, messageId, emoji: normalizeReactionEmoji(binding.emoji), role_id: binding.roleId
     });
   }
@@ -1018,7 +1035,7 @@ async function getReactionRoleBinding(guildId, messageId, emoji) {
     );
     return result?.rows?.[0] || null;
   }
-  return memory.reactionRoleBindings.get(`${guildId}:${messageId}:${emoji}`) || null;
+  return memory.reactionRoleBindings.get(`${guildId}:${messageId}:${normalizeReactionEmoji(emoji)}`) || null;
 }
 
 
@@ -1194,6 +1211,7 @@ async function handleAkiButton(interaction) {
     if (!canClose) { await interaction.reply({ content: 'Chỉ người mở ticket hoặc staff có quyền quản lý kênh mới được đóng ticket.', ephemeral: true }); return true; }
     await interaction.reply({ content: '🔒 Đang đóng ticket…', ephemeral: true });
     await channel.permissionOverwrites.edit(ownerMatch[1], { ViewChannel: false, SendMessages: false }).catch(() => {});
+    await channel.setTopic('aki-ticket-owner=' + ownerMatch[1] + ';aki-ticket-status=closed').catch(() => {});
     if (!channel.name.startsWith('closed-')) await channel.setName(('closed-' + channel.name).slice(0, 100)).catch(() => {});
     await addActivity(guild.id, interaction.user.id, 'ticket:closed', 'Đã đóng #' + channel.name + '.').catch(() => {});
     return true;
@@ -1237,7 +1255,7 @@ async function runCommand(name, ctx) {
       const need = 100;
       return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle('✨ Rank · ' + (member.user.globalName || member.user.username))
         .setThumbnail(member.user.displayAvatarURL({ size: 128 }))
-        .setDescription('**Level ' + level + '** · ' + xp + ' XP tổng\\n`' + progressBar(progress, need) + '` ' + progress + '/100 XP tới level tiếp theo')
+        .setDescription('**Level ' + level + '** · ' + xp + ' XP tổng\n`' + progressBar(progress, need) + '` ' + progress + '/100 XP tới level tiếp theo')
         .setFooter({ text: 'Aki Community · XP cooldown 60 giây/tin nhắn' }).setTimestamp());
     }
     case 'balance': {
@@ -1264,7 +1282,7 @@ async function runCommand(name, ctx) {
       const body = rows.length ? rows.map(row => kind === 'coins'
         ? '`#' + row.rank + '` <@' + row.user_id + '> · **' + Number(row.coins).toLocaleString('en-US') + ' xu**'
         : '`#' + row.rank + '` <@' + row.user_id + '> · **Level ' + row.level + '** (' + Number(row.xp).toLocaleString('en-US') + ' XP)'
-      ).join('\\n') : 'Chưa có dữ liệu. Hãy trò chuyện hoặc dùng /daily để bắt đầu.';
+      ).join('\n') : 'Chưa có dữ liệu. Hãy trò chuyện hoặc dùng /daily để bắt đầu.';
       return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle(kind === 'coins' ? '🏆 Top xu server' : '🏆 Top level server')
         .setDescription(body).setFooter({ text: 'Aki Community · cập nhật trực tiếp từ profile' }).setTimestamp());
     }
@@ -1398,12 +1416,12 @@ async function runCommand(name, ctx) {
       return embedPayload(new EmbedBuilder().setTitle('◈ ANNOUNCEMENT').setDescription(String(args.message)).setFooter({ text: `${APP_NAME} · by Aki dev` }).setTimestamp());
     }
     case 'vc-join': {
-      ensureMemberPermission(user, PermissionFlagsBits.Connect);
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
       const ch = await joinGuildVoice(guild, args.channel, 'manual');
       return reply(`🎧 Đã vào voice **${ch.name}**.`);
     }
     case 'vc-leave': {
-      ensureMemberPermission(user, PermissionFlagsBits.Connect);
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
       const c = getVoiceConnection(guild.id);
       if (!c) return reply('🎧 Bot không ở voice.');
       c.destroy();
@@ -1504,15 +1522,15 @@ async function applyReactionRole(reaction, user, shouldAdd) {
     if (!guild || !message.id) return;
     guildId = guild.id;
     emojiName = reaction.emoji?.name || 'unknown emoji';
-    // Fast-filter ordinary chat reactions before database lookups.
+    // Only the currently configured reaction-role panel may assign roles.
     if (message.author?.id !== bot.user?.id) return;
-    const isRolePanel = message.embeds?.some(item => String(item.footer?.text || '').includes('Reaction Roles'));
-    if (!isRolePanel) return;
-    // Resolve from the embed first, so a failed or stale DB mapping cannot block assignment.
-    let binding = parseReactionRoleBindingFromMessage(message, bot.user?.id, emojiName);
-    if (!binding) {
-      try { binding = await getReactionRoleBinding(guild.id, message.id, emojiName); }
-      catch (dbError) { console.warn('Reaction-role DB lookup failed; embed fallback used:', dbError.message); }
+    const panel = await getReactionRolePanel(guild.id);
+    if (!panel || panel.message_id !== message.id || (panel.channel_id && panel.channel_id !== message.channelId)) return;
+    let binding;
+    try { binding = await getReactionRoleBinding(guild.id, message.id, emojiName); }
+    catch (dbError) {
+      console.warn('Reaction-role binding lookup failed; ignoring reaction for safety:', dbError.message);
+      return;
     }
     if (!binding?.role_id) return;
 
@@ -1648,7 +1666,7 @@ bot.on('messageCreate', async message => {
     };
     if (['rank', 'balance'].includes(name)) {
       const userMention = message.mentions.users.first();
-      const rawId = parts.find(part => /^\\d{17,20}$/.test(part));
+      const rawId = parts.find(part => /^\d{17,20}$/.test(part));
       if (userMention || rawId) basicMap[name].user = userMention?.id || rawId;
     }
     if (name === 'afk') {
@@ -1743,9 +1761,6 @@ app.get('/api/me', async (req, res) => {
     id: g.id, name: g.name, icon: g.icon, owner: Boolean(g.owner), permissions: g.permissions,
     manageable: canManageGuild(g), botPresent: true
   }));
-  const botGuildsNotInUserList = [...bot.guilds.cache.values()]
-    .filter(g => !userGuilds.some(ug => ug.id === g.id))
-    .map(g => ({ id: g.id, name: g.name }));
   res.json({
     authenticated: true, user: s.user, guilds, manageableGuilds,
     guildDiagnostics: {
@@ -1754,7 +1769,6 @@ app.get('/api/me', async (req, res) => {
       sharedGuildCount: guilds.length,
       manageableGuildCount: manageableGuilds.length,
       manageableMissingBotCount: manageableGuilds.filter(g => !g.botPresent).length,
-      botGuildsNotInUserList,
       botReady: bot.isReady()
     },
     bot: { ready: bot.isReady(), id: bot.user?.id || null, tag: bot.user?.tag || null, guilds: bot.guilds.cache.size, ping: Math.round(bot.ws.ping) }
