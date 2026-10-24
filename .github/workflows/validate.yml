@@ -34,6 +34,7 @@ jobs:
           const server = fs.readFileSync('server.js', 'utf8');
           const html = fs.readFileSync('public/index.html', 'utf8');
           const client = fs.readFileSync('public/script.js', 'utf8');
+          const migration = fs.readFileSync('migrations/001_initial.sql', 'utf8');
           for (const route of [
             "app.post('/api/guilds/:guildId/roles-panel'",
             "app.post('/api/guilds/:guildId/announce'",
@@ -57,7 +58,7 @@ jobs:
           assert.ok(server.includes("process.on('unhandledRejection'"), 'Missing runtime error reporting hook');
           assert.ok(server.includes("bot.on('error'"), 'Missing Discord client error reporting hook');
           assert.ok(server.includes("const migrationDir = new URL('./migrations/', import.meta.url)"), 'Missing versioned migration runner');
-          assert.ok(server.includes('CREATE TABLE IF NOT EXISTS community_profiles'), 'Missing persistent community profile table');
+          assert.ok(migration.includes('CREATE TABLE IF NOT EXISTS community_profiles'), 'Missing persistent community profile table in initial migration');
           for (const name of ['rank','balance','daily','work','leaderboard','welcome-setup','goodbye-setup']) {
             assert.ok(server.includes(`setName('${name}')`), `Missing slash command: ${name}`);
           }
