@@ -22,6 +22,7 @@ jobs:
           node --check script.js
           node --check public/script.js
           node --check lib/role-utils.js
+          node --check lib/security-utils.js
           node --test tests/*.test.js
       - name: Check root and public bundles stay synchronized
         run: |
@@ -51,6 +52,9 @@ jobs:
           assert.ok(server.includes("aki:rr:"), 'Missing emoji button fallback for role selection');
           assert.ok(server.includes('normalizeReactionEmoji'), 'Missing Unicode emoji normalization');
           assert.ok(server.includes('isActiveReactionRolePanel(panel, message)'), 'Reaction handler must check the active panel message ID');
+          assert.ok(server.includes('sanitizePollText(args.question ||'), 'Poll text must neutralize role and mass mentions');
+          assert.ok(server.includes("isAllowedOrigin(req.get('origin'), SITE_URL)"), 'Mutating requests must validate Origin');
+          assert.ok(!server.includes('sessions: sessionStore.size'), 'Overview must not expose the process session count');
           assert.ok(server.includes('getReactionRoleBinding(guild.id, message.id, emojiName)'), 'Reaction handler must use the configured database binding');
           assert.ok(!server.includes('parseReactionRoleBindingFromMessage'), 'Reaction roles must never be parsed from embed text');
           assert.ok(server.includes("process.on('unhandledRejection'"), 'Missing runtime error reporting hook');

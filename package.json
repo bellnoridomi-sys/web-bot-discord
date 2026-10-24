@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test tests/role-utils.test.js"
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "@discordjs/voice": "0.19.2",

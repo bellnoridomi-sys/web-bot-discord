@@ -7,7 +7,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
-import { normalizeReactionEmoji, isActiveReactionRolePanel } from './lib/role-utils.js';
+import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan } from './lib/role-utils.js';
+import { isAllowedOrigin } from './lib/security-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
 import {
@@ -46,16 +47,30 @@ const INTERNAL_PREFIX = 'aki';
 const LEGIT_TARGET_USER_ID = process.env.LEGIT_TARGET_USER_ID || '';
 
 app.set('trust proxy', 1);
-app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+app.use(helmet({ crossOriginEmbedderPolicy: false, contentSecurityPolicy: { directives: {
+  defaultSrc: ["'self'"], scriptSrc: ["'self'", "'unsafe-inline'"],
+  styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+  fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+  imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+  connectSrc: ["'self'", 'https://discord.com'], objectSrc: ["'none'"],
+  baseUri: ["'self'"], frameAncestors: ["'self'"],
+  formAction: ["'self'", 'https://discord.com', 'https://accounts.google.com']
+} } }));
 app.use(express.json({ limit: '256kb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(rateLimit({ windowMs: 60_000, limit: 160, standardHeaders: true, legacyHeaders: false }));
+app.use((req, res, next) => {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
+  if (!isAllowedOrigin(req.get('origin'), SITE_URL)) return res.status(403).json({ error: 'ORIGIN_NOT_ALLOWED' });
+  next();
+});
 
 const sessionStore = new Map();
 const oauthStateStore = new Map();
 const activityCache = [];
 const xpCooldowns = new Map();
 const runtimeErrorCooldowns = new Map();
+const memoryReminderCounts = new Map();
 const memory = {
   configs: new Map(),
   warnings: new Map(),
@@ -65,12 +80,13 @@ const memory = {
   communityProfiles: new Map()
 };
 
+const databaseHost = (() => { try { return new URL(process.env.DATABASE_URL || '').hostname; } catch { return ''; } })();
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
-      max: 4,
-      idleTimeoutMillis: 10_000
+      ssl: ['localhost', '127.0.0.1', '::1'].includes(databaseHost) || process.env.PGSSL_MODE === 'disable'
+        ? false : { rejectUnauthorized: process.env.PGSSL_REJECT_UNAUTHORIZED !== 'false' },
+      max: 4, idleTimeoutMillis: 10_000
     })
   : null;
 
@@ -342,8 +358,22 @@ function afkPayload(memberUser, afk) {
   return { embeds: [embed], allowedMentions: { parse: [] } };
 }
 
+const MAX_PENDING_REMINDERS_PER_USER = 10;
+function reminderKey(guildId, userId) { return guildId + ':' + userId; }
 async function scheduleReminder(guildId, userId, channelId, text, executeAt) {
-  if (pool) await dbQuery('INSERT INTO reminders(guild_id,user_id,channel_id,text,execute_at) VALUES($1,$2,$3,$4,$5)', [guildId, userId, channelId, text, executeAt]);
+  if (pool) {
+    const pending = await dbQuery('SELECT COUNT(*)::int AS count FROM reminders WHERE guild_id=$1 AND user_id=$2 AND done=FALSE', [guildId, userId]);
+    if (Number(pending?.rows?.[0]?.count || 0) >= MAX_PENDING_REMINDERS_PER_USER) throw new Error('Bạn chỉ được có tối đa ' + MAX_PENDING_REMINDERS_PER_USER + ' lời nhắc đang chờ trong server này.');
+    await dbQuery('INSERT INTO reminders(guild_id,user_id,channel_id,text,execute_at) VALUES($1,$2,$3,$4,$5)', [guildId, userId, channelId, text, executeAt]);
+    return;
+  }
+  const key = reminderKey(guildId, userId), count = memoryReminderCounts.get(key) || 0;
+  if (count >= MAX_PENDING_REMINDERS_PER_USER) throw new Error('Bạn chỉ được có tối đa ' + MAX_PENDING_REMINDERS_PER_USER + ' lời nhắc đang chờ trong server này.');
+  memoryReminderCounts.set(key, count + 1);
+}
+function releaseMemoryReminder(guildId, userId) {
+  const key = reminderKey(guildId, userId), count = memoryReminderCounts.get(key) || 0;
+  if (count <= 1) memoryReminderCounts.delete(key); else memoryReminderCounts.set(key, count - 1);
 }
 
 async function reminderTick() {
@@ -902,7 +932,7 @@ const commands = [
   new SlashCommandBuilder().setName('remind').setDescription('Đặt lời nhắc theo giây.').addIntegerOption(o => o.setName('seconds').setDescription('Số giây').setMinValue(5).setMaxValue(604800).setRequired(true)).addStringOption(o => o.setName('text').setDescription('Nội dung').setRequired(true)),
   new SlashCommandBuilder().setName('afk').setDescription('Bật AFK + ảnh/GIF tuỳ chọn.').addStringOption(o => o.setName('reason').setDescription('Lý do').setMaxLength(1000).setRequired(false)).addStringOption(o => o.setName('image_url').setDescription('URL ảnh/GIF (https://...)').setMaxLength(2048).setRequired(false)).addAttachmentOption(o => o.setName('media').setDescription('Upload ảnh/GIF trực tiếp').setRequired(false)),
   new SlashCommandBuilder().setName('warn').setDescription('Cảnh cáo thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(true)),
-  new SlashCommandBuilder().setName('warnings').setDescription('Xem cảnh cáo.').addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)),
+  new SlashCommandBuilder().setName('warnings').setDescription('Xem cảnh cáo.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)),
   new SlashCommandBuilder().setName('clear').setDescription('Xoá tin nhắn gần nhất.').setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages.toString()).addIntegerOption(o => o.setName('amount').setDescription('1–100').setMinValue(1).setMaxValue(100).setRequired(true)),
   new SlashCommandBuilder().setName('slowmode').setDescription('Đặt slowmode.').setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels.toString()).addIntegerOption(o => o.setName('seconds').setDescription('0–21600 giây').setMinValue(0).setMaxValue(21600).setRequired(true)),
   new SlashCommandBuilder().setName('lock').setDescription('Khoá kênh hiện tại.').setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels.toString()),
@@ -956,16 +986,12 @@ function ensureTargetBelowInvoker(actor, target, action = 'thao tác này') {
   if (actor.id === guild.ownerId) return;
   if (target.id === guild.ownerId) throw new Error('Không thể thực hiện thao tác với chủ server.');
   if (target.id === actor.id) throw new Error('Bạn không thể dùng lệnh này lên chính mình.');
-  if (target.roles.highest.comparePositionTo(actor.roles.highest) >= 0) {
-    throw new Error(`Role cao nhất của mục tiêu phải thấp hơn role cao nhất của bạn để ${action}.`);
-  }
+  if (!isRoleHigherThan(actor.roles.highest, target.roles.highest)) throw new Error(`Role cao nhất của mục tiêu phải thấp hơn role cao nhất của bạn để ${action}.`);
 }
 function ensureRoleBelowInvoker(actor, role) {
   if (!actor || !role) throw new Error('Không xác định được người thực hiện hoặc role.');
   if (role.managed || role.id === actor.guild.id) throw new Error('Không thể tự gán/gỡ role @everyone hoặc role do tích hợp quản lý.');
-  if (actor.id !== actor.guild.ownerId && role.comparePositionTo(actor.roles.highest) >= 0) {
-    throw new Error('Role cần gán/gỡ phải thấp hơn role cao nhất của bạn.');
-  }
+  if (actor.id !== actor.guild.ownerId && !isRoleHigherThan(actor.roles.highest, role)) throw new Error('Role cần gán/gỡ phải thấp hơn role cao nhất của bạn.');
 }
 
 async function joinGuildVoice(guild, channelId, source = 'manual') {
@@ -1347,7 +1373,10 @@ async function runCommand(name, ctx) {
     case 'poll': {
       const opts = [args.option1, args.option2, args.option3, args.option4].filter(Boolean);
       const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
-      return embedPayload(new EmbedBuilder().setTitle(`◈ ${args.question}`).setDescription(opts.map((v, i) => `${emojis[i]} ${v}`).join('\n\n')).setFooter({ text: `Poll by ${userName}` }).setTimestamp());
+      const question = sanitizePollText(args.question || 'Bình chọn', 250);
+      const safeOptions = opts.map(value => sanitizePollText(value, 900));
+      const safeFooter = sanitizePollFooter(userName);
+      return embedPayload(new EmbedBuilder().setTitle('◈ ' + question).setDescription(safeOptions.map((v, i) => emojis[i] + ' ' + v).join('\n\n')).setFooter({ text: 'Poll by ' + safeFooter }).setTimestamp());
     }
     case '8ball':
       return reply(`🎱 **${magic8[Math.floor(Math.random() * magic8.length)]}**`);
@@ -1362,7 +1391,10 @@ async function runCommand(name, ctx) {
       if (!Number.isInteger(seconds) || seconds < 5 || seconds > 604800) throw new Error('seconds phải từ 5 đến 604800.');
       const executeAt = Date.now() + seconds * 1000;
       await scheduleReminder(guild.id, userId, channel.id, String(args.text), executeAt);
-      if (!pool) setTimeout(() => channel.send({ content: `<@${userId}> ⏰ **Nhắc bạn:** ${args.text}`, allowedMentions: { parse: [], users: [userId] } }), seconds * 1000);
+      if (!pool) setTimeout(() => {
+        channel.send({ content: `<@${userId}> ⏰ **Nhắc bạn:** ${args.text}`, allowedMentions: { parse: [], users: [userId] } })
+          .catch(() => {}).finally(() => releaseMemoryReminder(guild.id, userId));
+      }, seconds * 1000);
       return reply(`⏰ Đã đặt nhắc trong **${seconds}s**.`);
     }
     case 'afk': {
@@ -1414,6 +1446,7 @@ async function runCommand(name, ctx) {
       return reply(`⚠️ Đã cảnh cáo **${target.user.globalName || target.user.username}**. Tổng: **${count}**.`);
     }
     case 'warnings': {
+      ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
       const m = target || user;
       const list = await getWarnings(guild.id, m.id);
       return reply(`📋 **Warnings · ${m.user.globalName || m.user.username}**\n${list.length ? list.map((w, i) => `${i + 1}. ${w.reason}`).join('\n') : 'Không có cảnh cáo.'}`);
@@ -1676,12 +1709,8 @@ bot.on('messageCreate', async message => {
       const targetId = match[1] || match[2] || null;
       if (!LEGIT_TARGET_USER_ID) throw new Error('Tính năng +legit chưa được cấu hình. Chủ bot cần đặt LEGIT_TARGET_USER_ID trong Environment.');
       const isConfiguredAccount = message.author.id === LEGIT_TARGET_USER_ID;
-      if (targetId && targetId !== LEGIT_TARGET_USER_ID) {
-        throw new Error('ID được nhắc phải đúng tài khoản đã cấu hình: ' + LEGIT_TARGET_USER_ID + '.');
-      }
-      if (!isConfiguredAccount && !targetId) {
-        throw new Error('Dùng +legit + @' + LEGIT_TARGET_USER_ID + ' để xác nhận tài khoản mục tiêu.');
-      }
+      if (targetId && targetId !== LEGIT_TARGET_USER_ID) throw new Error('Tài khoản được nhắc không khớp với tài khoản đã cấu hình.');
+      if (!isConfiguredAccount && !targetId) throw new Error('Dùng +legit + @tài_khoản_đã_cấu_hình để xác nhận.');
       if (!isConfiguredAccount) {
         const actor = message.member || await fetchGuildMember(message.guild, message.author.id);
         ensureMemberPermission(actor, PermissionFlagsBits.ManageRoles);
@@ -1843,7 +1872,7 @@ app.get('/api/me', async (req, res) => {
       manageableMissingBotCount: manageableGuilds.filter(g => !g.botPresent).length,
       botReady: bot.isReady()
     },
-    bot: { ready: bot.isReady(), id: bot.user?.id || null, tag: bot.user?.tag || null, guilds: bot.guilds.cache.size, ping: Math.round(bot.ws.ping) }
+    bot: { ready: bot.isReady(), id: bot.user?.id || null, tag: bot.user?.tag || null, guilds: bot.guilds.cache.size, ping: Math.round(bot.ws.ping), commands: commands.length }
   });
 });
 app.get('/api/activity', requireAuth, async (req, res) => {
@@ -1878,7 +1907,12 @@ function canManageGuildFromOAuthMeta(meta) {
 
 setupActivitySocketAuth();
 
+function discordActorId(session) {
+  const user = session?.user, candidate = user?.discordId || (user?.provider === 'discord' ? user.id : null);
+  return typeof candidate === 'string' && /^\d{17,20}$/.test(candidate) ? candidate : null;
+}
 async function requireGuildControl(req, res) {
+  if (!discordActorId(req.session)) throw Object.assign(new Error('Hãy đăng nhập bằng Discord để điều khiển bot và server.'), { status: 409 });
   const guild = bot.guilds.cache.get(req.params.guildId);
   const meta = (req.session.guilds || []).find(x => x.id === req.params.guildId);
   if (!guild || !meta) throw Object.assign(new Error('Bot chưa có trong server này hoặc tài khoản Discord không có trong server.'), { status: 404 });
@@ -1976,7 +2010,9 @@ app.post('/api/guilds/:guildId/command', requireAuth, async (req, res) => {
     if (!commands.some(c => c.name === name)) return res.status(400).json({ error: 'UNKNOWN_COMMAND' });
     const channel = req.body?.channelId ? await guild.channels.fetch(req.body.channelId).catch(() => null) : guild.channels.cache.find(c => c.isTextBased() && c.type !== ChannelType.GuildVoice);
     const args = req.body?.args || {};
-    const payload = await runCommand(name, { guild, userId: req.session.user.provider === 'discord' ? req.session.user.id : guild.ownerId, userName: req.session.user.username, channel, args, source: 'web' });
+    const actorId = discordActorId(req.session);
+    if (!actorId) return res.status(409).json({ error: 'DISCORD_LINK_REQUIRED' });
+    const payload = await runCommand(name, { guild, userId: actorId, userName: req.session.user.username, channel, args, source: 'web' });
     const sendable = channel?.isTextBased?.() && payload;
     let sent = null;
     if (sendable) sent = await channel.send(payload);
@@ -1989,7 +2025,8 @@ app.post('/api/guilds/:guildId/command', requireAuth, async (req, res) => {
 app.post('/api/guilds/:guildId/announce', requireAuth, async (req, res) => {
   try {
     const { guild } = await requireGuildControl(req, res);
-    const actorId = req.session.user.provider === 'discord' ? req.session.user.id : guild.ownerId;
+    const actorId = discordActorId(req.session);
+    if (!actorId) return res.status(409).json({ error: 'DISCORD_LINK_REQUIRED' });
     const actor = await fetchGuildMember(guild, actorId);
     ensureMemberPermission(actor, PermissionFlagsBits.ManageMessages);
 
@@ -2033,7 +2070,9 @@ app.post('/api/guilds/:guildId/announce', requireAuth, async (req, res) => {
 app.post('/api/guilds/:guildId/voice/join', requireAuth, async (req, res) => {
   try {
     const { guild } = await requireGuildControl(req, res);
-    const member = await fetchGuildMember(guild, req.session.user.provider === 'discord' ? req.session.user.id : guild.ownerId);
+    const actorId = discordActorId(req.session);
+    if (!actorId) return res.status(409).json({ error: 'DISCORD_LINK_REQUIRED' });
+    const member = await fetchGuildMember(guild, actorId);
     ensureMemberPermission(member, PermissionFlagsBits.ManageGuild);
     const ch = await joinGuildVoice(guild, req.body.channelId, 'manual');
     await addActivity(guild.id, req.session.user.id, 'voice:join', ch.name);
@@ -2043,6 +2082,10 @@ app.post('/api/guilds/:guildId/voice/join', requireAuth, async (req, res) => {
 app.post('/api/guilds/:guildId/voice/leave', requireAuth, async (req, res) => {
   try {
     const { guild } = await requireGuildControl(req, res);
+    const actorId = discordActorId(req.session);
+    if (!actorId) return res.status(409).json({ error: 'DISCORD_LINK_REQUIRED' });
+    const member = await fetchGuildMember(guild, actorId);
+    ensureMemberPermission(member, PermissionFlagsBits.ManageGuild);
     const c = getVoiceConnection(guild.id);
     c?.destroy();
     await addActivity(guild.id, req.session.user.id, 'voice:leave', 'manual');
@@ -2054,7 +2097,9 @@ app.post('/api/guilds/:guildId/voice/leave', requireAuth, async (req, res) => {
 app.post('/api/guilds/:guildId/roles-panel', requireAuth, async (req, res) => {
   try {
     const { guild } = await requireGuildControl(req, res);
-    const member = await fetchGuildMember(guild, req.session.user.discordId || req.session.user.id);
+    const actorId = discordActorId(req.session);
+    if (!actorId) return res.status(409).json({ error: 'DISCORD_LINK_REQUIRED' });
+    const member = await fetchGuildMember(guild, actorId);
     ensureMemberPermission(member, PermissionFlagsBits.ManageRoles);
     const channel = await guild.channels.fetch(String(req.body?.channelId || '')).catch(() => null);
     if (!channel) return res.status(400).json({ error: 'ROLE_PANEL_CHANNEL_INVALID' });
@@ -2066,7 +2111,9 @@ app.post('/api/guilds/:guildId/roles-panel', requireAuth, async (req, res) => {
 app.post('/api/guilds/:guildId/tickets/setup', requireAuth, async (req, res) => {
   try {
     const { guild } = await requireGuildControl(req, res);
-    const member = await fetchGuildMember(guild, req.session.user.discordId || req.session.user.id);
+    const actorId = discordActorId(req.session);
+    if (!actorId) return res.status(409).json({ error: 'DISCORD_LINK_REQUIRED' });
+    const member = await fetchGuildMember(guild, actorId);
     ensureMemberPermission(member, PermissionFlagsBits.ManageChannels);
     const channel = await guild.channels.fetch(String(req.body?.channelId || '')).catch(() => null);
     if (!channel) return res.status(400).json({ error: 'TICKET_PANEL_CHANNEL_INVALID' });
@@ -2078,7 +2125,9 @@ app.post('/api/guilds/:guildId/tickets/setup', requireAuth, async (req, res) => 
 app.post('/api/guilds/:guildId/auto-role', requireAuth, async (req, res) => {
   try {
     const { guild } = await requireGuildControl(req, res);
-    const member = await fetchGuildMember(guild, req.session.user.discordId || req.session.user.id);
+    const actorId = discordActorId(req.session);
+    if (!actorId) return res.status(409).json({ error: 'DISCORD_LINK_REQUIRED' });
+    const member = await fetchGuildMember(guild, actorId);
     ensureMemberPermission(member, PermissionFlagsBits.ManageRoles);
     const roleId = req.body?.roleId ? String(req.body.roleId) : null;
     if (roleId) {
@@ -2221,7 +2270,6 @@ app.get('/api/overview', requireAuth, async (req, res) => {
   res.json({
     name: APP_NAME,
     bot: { ready: bot.isReady(), guilds: bot.guilds.cache.size, ping: Math.round(bot.ws.ping), commands: commands.length },
-    sessions: sessionStore.size,
     persistence: pool ? 'postgres' : 'memory'
   });
 });
