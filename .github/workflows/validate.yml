@@ -77,6 +77,9 @@ jobs:
             assert.equal(match[1] || match[2] || null, expected, `Wrong +legit target for: ${input}`);
           }
           assert.ok(server.includes("app.get('/api/public/guilds/:guildId/leaderboard'"), 'Missing public leaderboard endpoint');
+          assert.ok(server.includes("app.get('/api/commands'"), 'Missing command schema endpoint');
+          assert.ok(html.includes('id="commandDynamicFields"'), 'Command Lab should render dynamic fields');
+          assert.ok(client.includes('renderDynamicCommandForm'), 'Missing generated Command Lab form');
           assert.ok(server.includes("app.get('/invite'"), 'Missing Add to Discord endpoint');
           for (const page of ['privacy.html','terms.html','leaderboard.html']) assert.ok(fs.existsSync('public/' + page), 'Missing public page: ' + page);
           const leaderboard = fs.readFileSync('public/leaderboard.html','utf8');

@@ -2073,6 +2073,15 @@ bot.on('voiceStateUpdate', async (oldState, newState) => {
   }
 });
 
+app.get('/api/commands', (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=300');
+  res.json({ commands: commands.map(command => ({
+    name: command.name,
+    description: command.description || '',
+    options: Array.isArray(command.options) ? command.options : [],
+    defaultMemberPermissions: command.default_member_permissions || null
+  })) });
+});
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'aki-discord-control', persistence: pool ? 'postgres' : 'memory', time: new Date().toISOString(), bot: bot.isReady(), sessionPersistence: Boolean(pool) }));
 app.get('/health', (_req, res) => res.status(200).send('OK'));
 
@@ -2168,6 +2177,21 @@ app.get('/api/guilds/:guildId/channels', requireAuth, async (req, res) => {
   if (!canManageGuildFromOAuthMeta(meta)) return res.status(403).json({ error: 'NO_GUILD_PERMISSION' });
   await g.channels.fetch();
   res.json({ channels: [...g.channels.cache.values()].filter(c => [ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(c.type)).sort((a,b) => a.position-b.position).map(c => ({ id: c.id, name: c.name, type: c.type })) });
+});
+app.get('/api/guilds/:guildId/members', requireAuth, async (req, res) => {
+  const guild = bot.guilds.cache.get(req.params.guildId);
+  const meta = (req.session.guilds || []).find(item => item.id === req.params.guildId);
+  if (!guild || !canManageGuildFromOAuthMeta(meta)) return res.status(403).json({ error: 'NO_GUILD_PERMISSION' });
+  try {
+    await guild.members.fetch({ limit: 100 }).catch(() => {});
+    const members = [...guild.members.cache.values()]
+      .filter(member => !member.user.bot)
+      .slice(0, 100)
+      .map(member => ({ id: member.id, label: member.displayName || member.user.globalName || member.user.username, username: member.user.username }));
+    return res.json({ members });
+  } catch {
+    return res.status(503).json({ error: 'MEMBER_LIST_UNAVAILABLE' });
+  }
 });
 app.get('/api/guilds/:guildId/config', requireAuth, async (req, res) => {
   const g = bot.guilds.cache.get(req.params.guildId);
