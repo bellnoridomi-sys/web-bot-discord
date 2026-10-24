@@ -55,7 +55,11 @@ test('rejects missing, malformed, and foreign origins', () => {
   assert.equal(isAllowedOrigin('not a URL', 'https://aki.example'), false);
 });
 test('hierarchy helper requires actor highest role above target', () => {
-  const high = { comparePositionTo: () => 1 }, equal = { comparePositionTo: () => 0 }, low = { comparePositionTo: () => -1 };
+  const role = position => ({
+    position,
+    comparePositionTo(other) { return Math.sign(this.position - other.position); }
+  });
+  const high = role(3), equal = role(3), low = role(1);
   assert.equal(isRoleHigherThan(high, low), true);
   assert.equal(isRoleHigherThan(high, equal), false);
   assert.equal(isRoleHigherThan(low, high), false);
