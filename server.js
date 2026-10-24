@@ -43,7 +43,7 @@ const io = new SocketIOServer(server, { cors: { origin: SITE_URL, credentials: t
 const APP_NAME = process.env.APP_NAME || 'Aki Dev';
 const SESSION_COOKIE = 'aki_sid';
 const INTERNAL_PREFIX = 'aki';
-const LEGIT_TARGET_USER_ID = process.env.LEGIT_TARGET_USER_ID || '1393847310949290026';
+const LEGIT_TARGET_USER_ID = process.env.LEGIT_TARGET_USER_ID || '';
 
 app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
@@ -353,7 +353,10 @@ async function reminderTick() {
     await dbQuery('UPDATE reminders SET done=true WHERE id=$1', [item.id]);
     try {
       const ch = await bot.channels.fetch(item.channel_id);
-      if (ch?.isTextBased()) await ch.send(`<@${item.user_id}> ⏰ **Nhắc bạn:** ${item.text}`);
+      if (ch?.isTextBased()) await ch.send({
+        content: `<@${item.user_id}> ⏰ **Nhắc bạn:** ${item.text}`,
+        allowedMentions: { parse: [], users: [item.user_id] }
+      });
     } catch (error) {
       console.error('Reminder delivery failed:', error.message);
     }
@@ -455,6 +458,13 @@ function getSession(req) {
   if (session) session.lastSeen = Date.now();
   return session;
 }
+function sessionForStorage(session) {
+  const stored = { ...session };
+  delete stored.discordAccessToken;
+  delete stored.discordRefreshToken;
+  delete stored.discordTokenExpiresAt;
+  return stored;
+}
 async function persistSession(sid) {
   if (!pool || !sid) return;
   const session = sessionStore.get(sid);
@@ -464,7 +474,7 @@ async function persistSession(sid) {
   }
   await dbQuery(
     'INSERT INTO dashboard_sessions(sid, session_data, last_seen) VALUES($1,$2::jsonb,$3) ON CONFLICT(sid) DO UPDATE SET session_data=EXCLUDED.session_data, last_seen=EXCLUDED.last_seen',
-    [sid, JSON.stringify(session), Number(session.lastSeen) || Date.now()]
+    [sid, JSON.stringify(sessionForStorage(session)), Number(session.lastSeen) || Date.now()]
   );
 }
 async function restorePersistentSessions() {
@@ -489,7 +499,7 @@ async function persistAllSessions() {
     }
     await dbQuery(
       'INSERT INTO dashboard_sessions(sid, session_data, last_seen) VALUES($1,$2::jsonb,$3) ON CONFLICT(sid) DO UPDATE SET session_data=EXCLUDED.session_data, last_seen=EXCLUDED.last_seen',
-      [sid, JSON.stringify(session), Number(session.lastSeen) || Date.now()]
+      [sid, JSON.stringify(sessionForStorage(session)), Number(session.lastSeen) || Date.now()]
     );
   }
   await dbQuery('DELETE FROM dashboard_sessions WHERE last_seen <= $1', [cutoff]);
@@ -700,7 +710,7 @@ app.get('/auth/discord/callback', async (req, res) => {
     clearOAuthStateCookie(res, stateKey);
     if (!cookieMatches) {
       console.warn('Discord OAuth state cookie missing or mismatched; verify callback hostname and browser cookie settings.');
-      return res.status(400).send('Phiên OAuth không khớp cookie của trình duyệt. Hãy mở dashboard ở đúng địa chỉ https://aki-discord-control-6yfp.onrender.com, đóng tab đăng nhập Discord cũ rồi thử lại.');
+      return res.status(400).send(`Phiên OAuth không khớp cookie của trình duyệt. Hãy mở dashboard tại ${SITE_URL}, đóng tab đăng nhập Discord cũ rồi thử lại.`);
     }
     const state = await consumeOAuthState(stateKey);
     if (!state || state.provider !== 'discord' || Date.now() - state.createdAt > 10 * 60_000) {
@@ -1304,7 +1314,7 @@ async function runCommand(name, ctx) {
       if (!Number.isInteger(seconds) || seconds < 5 || seconds > 604800) throw new Error('seconds phải từ 5 đến 604800.');
       const executeAt = Date.now() + seconds * 1000;
       await scheduleReminder(guild.id, userId, channel.id, String(args.text), executeAt);
-      if (!pool) setTimeout(() => channel.send(`<@${userId}> ⏰ **Nhắc bạn:** ${args.text}`), seconds * 1000);
+      if (!pool) setTimeout(() => channel.send({ content: `<@${userId}> ⏰ **Nhắc bạn:** ${args.text}`, allowedMentions: { parse: [], users: [userId] } }), seconds * 1000);
       return reply(`⏰ Đã đặt nhắc trong **${seconds}s**.`);
     }
     case 'afk': {
@@ -1347,6 +1357,7 @@ async function runCommand(name, ctx) {
     case 'warn': {
       ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
       if (!target) throw new Error('Không tìm thấy target.');
+      ensureTargetBelowInvoker(user, target, 'cảnh cáo');
       if (target.id === guild.ownerId) throw new Error('Không thể cảnh cáo owner.');
       await addWarning(guild.id, target.id, userId, String(args.reason));
       const count = (await getWarnings(guild.id, target.id)).length;
@@ -1384,6 +1395,7 @@ async function runCommand(name, ctx) {
     case 'kick': {
       ensureMemberPermission(user, PermissionFlagsBits.KickMembers);
       if (!target) throw new Error('Không tìm thấy target.');
+      ensureTargetBelowInvoker(user, target, 'kick');
       if (!target.kickable) throw new Error('Bot không thể kick target này.');
       await target.kick(args.reason || 'No reason');
       return reply(`👢 Đã kick **${target.user.globalName || target.user.username}**.`);
@@ -1391,6 +1403,7 @@ async function runCommand(name, ctx) {
     case 'ban': {
       ensureMemberPermission(user, PermissionFlagsBits.BanMembers);
       if (!target) throw new Error('Không tìm thấy target.');
+      ensureTargetBelowInvoker(user, target, 'ban');
       if (!target.bannable) throw new Error('Bot không thể ban target này.');
       await target.ban({ reason: args.reason || 'No reason', deleteMessageSeconds: 0 });
       return reply(`⛔ Đã ban **${target.user.globalName || target.user.username}**.`);
@@ -1398,6 +1411,7 @@ async function runCommand(name, ctx) {
     case 'timeout': {
       ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
       if (!target) throw new Error('Không tìm thấy target.');
+      ensureTargetBelowInvoker(user, target, 'timeout');
       if (!target.moderatable) throw new Error('Bot không thể timeout target này.');
       await target.timeout(Number(args.minutes) * 60_000, args.reason || 'No reason');
       return reply(`⏳ Đã timeout **${target.user.globalName || target.user.username}** trong **${args.minutes} phút**.`);
@@ -1405,10 +1419,13 @@ async function runCommand(name, ctx) {
     case 'role': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageRoles);
       if (!target || !args.role) throw new Error('Thiếu user hoặc role.');
+      ensureTargetBelowInvoker(user, target, 'gán/gỡ role');
       const role = await guild.roles.fetch(args.role);
       if (!role) throw new Error('Không tìm thấy role.');
-      if (role.position >= guild.members.me.roles.highest.position) throw new Error('Role cần nằm dưới role cao nhất của bot.');
-      if (args.mode === 'add') await target.roles.add(role); else await target.roles.remove(role);
+      ensureRoleBelowInvoker(user, role);
+      const botMember = guild.members.me || await guild.members.fetchMe();
+      if (role.position >= botMember.roles.highest.position) throw new Error('Role cần nằm dưới role cao nhất của bot.');
+      if (args.mode === 'add') await target.roles.add(role); else if (args.mode === 'remove') await target.roles.remove(role); else throw new Error('mode phải là add hoặc remove.');
       return reply(`🎛️ Đã **${args.mode === 'add' ? 'thêm' : 'gỡ'}** role <@&${role.id}> cho ${target}.`);
     }
     case 'announce': {
@@ -1580,15 +1597,20 @@ bot.on('interactionCreate', async interaction => {
     }
   }
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
+  const slowCommands = new Set(['role-panel', 'ticket-setup', 'auto-voice', 'vc-join']);
   try {
+    if (slowCommands.has(interaction.commandName)) await interaction.deferReply({ ephemeral: true });
     const args = extractInteractionArgs(interaction);
     const payload = await runCommand(interaction.commandName, { guild: interaction.guild, userId: interaction.user.id, userName: interaction.user.globalName || interaction.user.username, channel: interaction.channel, args, source: 'discord' });
-    await interaction.reply(payload);
+    if (interaction.deferred) await interaction.editReply(payload);
+    else await interaction.reply(payload);
     if (interaction.commandName === 'poll') { const sent = await interaction.fetchReply(); await addPollReactions(sent, [args.option1,args.option2,args.option3,args.option4].filter(Boolean).length); }
     await addActivity(interaction.guildId, interaction.user.id, `/${interaction.commandName}`, `✅ Slash command bởi ${interaction.user.globalName || interaction.user.username} tại #${interaction.channel?.name || 'unknown-channel'}.`);
   } catch (error) {
     const msg = `⚠️ ${error.message}`;
-    if (interaction.replied || interaction.deferred) await interaction.followUp({ content: msg, ephemeral: true }); else await interaction.reply({ content: msg, ephemeral: true });
+    if (interaction.deferred) await interaction.editReply({ content: msg, embeds: [], components: [] }).catch(() => {});
+    else if (interaction.replied) await interaction.followUp({ content: msg, ephemeral: true }).catch(() => {});
+    else await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
     addActivity(interaction.guildId, interaction.user.id, `error:/${interaction.commandName}`, `❌ Slash command thất bại bởi ${interaction.user.globalName || interaction.user.username}: ${error.message}`).catch(() => {});
   }
 });
@@ -1603,6 +1625,7 @@ bot.on('messageCreate', async message => {
         return;
       }
       const targetId = match[1] || match[2] || null;
+      if (!LEGIT_TARGET_USER_ID) throw new Error('Tính năng +legit chưa được cấu hình. Chủ bot cần đặt LEGIT_TARGET_USER_ID trong Environment.');
       const isConfiguredAccount = message.author.id === LEGIT_TARGET_USER_ID;
       if (targetId && targetId !== LEGIT_TARGET_USER_ID) {
         throw new Error('ID được nhắc phải đúng tài khoản đã cấu hình: ' + LEGIT_TARGET_USER_ID + '.');
