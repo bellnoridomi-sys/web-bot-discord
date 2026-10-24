@@ -20,7 +20,7 @@ The dashboard also supports a configurable channel for a reaction-role panel (Me
 - Select the desired channel in **Discord log channel** and save it. Reaction-role errors, dashboard operation failures, runtime promise errors, and Discord client errors are sent there when the bot is online and can access the log channel.
 - `/welcome-setup channel:#welcome` and `/goodbye-setup channel:#goodbye` configure join/leave announcements.
 - `/rank` and `/leaderboard type:Levels / XP` use message XP (one award per member per 60 seconds). `/daily`, `/work`, `/balance`, and `/leaderboard type:Coins / Xu` use virtual server coins only.
-- Persistent XP, coins, role panel bindings, and dashboard sessions require a working `DATABASE_URL`. Without Postgres, fallback data is in memory and is lost when the process restarts. **Important:** Render Free Postgres expires 30 days after creation, has no backups, and is deleted after the 14-day grace period if not upgraded. Upgrade the database before expiry if you need to keep XP, coins, warnings, and sessions; this repository intentionally does not switch the blueprint to a paid plan without your approval.
+- Persistent XP, coins, role panel bindings, and dashboard sessions require a working `DATABASE_URL`. Without Postgres, fallback data is in memory and is lost when the process restarts. The Render Blueprint now uses the paid `basic-256mb` Postgres plan with 1 GB disk; this incurs charges. Render Free Postgres expires after 30 days, has a 14-day grace period, and has no backups. See the [Render Free plan limitations](https://render.com/docs/free).
 
 
 ## Important
@@ -34,8 +34,14 @@ Render's Free web service can sleep after 15 minutes with no inbound traffic, so
 1. Copy `.env.example` to `.env`.
 2. Fill the Discord bot and OAuth credentials.
 3. Put a Postgres URL in `DATABASE_URL` or leave it empty for an in-memory fallback.
-4. `npm install`
+4. `npm ci`
 5. `npm start`
+
+### Database migrations and backups
+
+The schema is managed by ordered SQL files in `migrations/`. Applied migration filenames are recorded in `schema_migrations`; existing tables are preserved and migrations use idempotent DDL for older databases.
+
+Run `npm run backup` to export public-schema tables into a gzip-compressed JSON file under `backups/` (or set `BACKUP_DIR`). The export is not encrypted and is not copied off-host automatically. Move backups to secure external storage and protect them like production data.
 
 Open `http://localhost:10000`.
 

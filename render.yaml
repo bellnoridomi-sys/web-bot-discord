@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: free
     region: singapore
-    buildCommand: npm install --no-audit --no-fund
+    buildCommand: if [ ! -f package-lock.json ]; then npm install --package-lock-only --ignore-scripts --no-audit --no-fund; fi && npm ci --no-audit --no-fund
     startCommand: npm start
     healthCheckPath: /health
     envVars:
@@ -34,7 +34,7 @@ services:
           property: connectionString
 
 databases:
-  # Free Postgres expires after 30 days and has no backups. Upgrade in Render before expiry for persistent data.
   - name: aki-discord-db
-    plan: free
+    plan: basic-256mb
+    diskSizeGB: 1
     region: singapore

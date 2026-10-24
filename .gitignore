@@ -7,4 +7,5 @@ npm-debug.log*
 *.log
 coverage/
 dist/
-download
+backups/
+*.json.gz

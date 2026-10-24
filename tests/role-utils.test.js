@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan } from '../lib/role-utils.js';
 import { isAllowedOrigin } from '../lib/security-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS } from '../lib/ticket-utils.js';
+import { normalizeMediaUrl } from '../lib/media-utils.js';
+import { getLevelProgress, calculateMessageXp } from '../lib/community-utils.js';
 
 const panel = { channel_id: '222222222222222222', message_id: '333333333333333333' };
 const activeMessage = { channelId: panel.channel_id, id: panel.message_id };
@@ -80,4 +82,25 @@ test('closed ticket retention timer is bounded by seven days', () => {
   assert.equal(ticketDeletionDelay(closedAt, closedAt), TICKET_RETENTION_MS);
   assert.equal(ticketDeletionDelay(closedAt, closedAt + TICKET_RETENTION_MS), 0);
   assert.equal(ticketDeletionDelay(null), null);
+});
+
+test('normalizeMediaUrl accepts http(s) and rejects unsafe or excessive URLs', () => {
+  assert.equal(normalizeMediaUrl('https://example.com/a'), 'https://example.com/a');
+  assert.equal(normalizeMediaUrl(''), null);
+  assert.throws(() => normalizeMediaUrl('javascript:alert(1)'), /http hoặc https/);
+  assert.throws(() => normalizeMediaUrl('not a URL'), /không hợp lệ/);
+  assert.throws(() => normalizeMediaUrl('https://example.com/' + 'a'.repeat(2050)), /quá dài/);
+});
+test('level progress is correct at boundaries and invalid XP values', () => {
+  assert.deepEqual(getLevelProgress(0), { xp: 0, level: 0, progress: 0, need: 100 });
+  assert.deepEqual(getLevelProgress(99), { xp: 99, level: 0, progress: 99, need: 100 });
+  assert.deepEqual(getLevelProgress(100), { xp: 100, level: 1, progress: 0, need: 100 });
+  assert.deepEqual(getLevelProgress(-2), { xp: 0, level: 0, progress: 0, need: 100 });
+  assert.deepEqual(getLevelProgress('bad'), { xp: 0, level: 0, progress: 0, need: 100 });
+});
+test('message XP rolls are deterministic and bounded', () => {
+  assert.equal(calculateMessageXp(0, 8, 14), 8);
+  assert.equal(calculateMessageXp(0.999999, 8, 14), 14);
+  assert.equal(calculateMessageXp(0.5, 8, 14), 11);
+  assert.equal(calculateMessageXp(5, 8, 14), 14);
 });

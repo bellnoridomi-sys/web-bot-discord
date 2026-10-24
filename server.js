@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan } from './lib/role-utils.js';
 import { isAllowedOrigin } from './lib/security-utils.js';
+import { normalizeMediaUrl } from './lib/media-utils.js';
+import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
@@ -101,94 +103,30 @@ async function dbQuery(text, params = []) {
 async function initDb() {
   if (!pool) return;
   await dbQuery(`
-    CREATE TABLE IF NOT EXISTS guild_configs (
-      guild_id TEXT PRIMARY KEY,
-      auto_voice_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-      auto_voice_channel_id TEXT,
-      prefix TEXT NOT NULL DEFAULT '!',
-      log_channel_id TEXT,
-      auto_role_id TEXT,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS auto_role_id TEXT;
-    ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS welcome_channel_id TEXT;
-    ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS goodbye_channel_id TEXT;
-    CREATE TABLE IF NOT EXISTS warnings (
-      id BIGSERIAL PRIMARY KEY,
-      guild_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      moderator_id TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS afk (
-      guild_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      media_url TEXT,
-      since BIGINT NOT NULL,
-      PRIMARY KEY (guild_id, user_id)
-    );
-    ALTER TABLE afk ADD COLUMN IF NOT EXISTS media_url TEXT;
-    CREATE TABLE IF NOT EXISTS reaction_role_panels (
-      guild_id TEXT PRIMARY KEY,
-      channel_id TEXT NOT NULL,
-      message_id TEXT NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS reaction_role_bindings (
-      guild_id TEXT NOT NULL,
-      message_id TEXT NOT NULL,
-      emoji TEXT NOT NULL,
-      role_id TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY(guild_id, message_id, emoji)
-    );
-    CREATE INDEX IF NOT EXISTS reaction_role_bindings_message_idx ON reaction_role_bindings(guild_id, message_id);
-    CREATE TABLE IF NOT EXISTS community_profiles (
-      guild_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      xp BIGINT NOT NULL DEFAULT 0,
-      level INTEGER NOT NULL DEFAULT 0,
-      coins BIGINT NOT NULL DEFAULT 0,
-      last_daily BIGINT NOT NULL DEFAULT 0,
-      last_work BIGINT NOT NULL DEFAULT 0,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (guild_id, user_id)
-    );
-    CREATE INDEX IF NOT EXISTS community_profiles_coins_idx ON community_profiles(guild_id, coins DESC);
-    CREATE INDEX IF NOT EXISTS community_profiles_xp_idx ON community_profiles(guild_id, xp DESC);
-    CREATE TABLE IF NOT EXISTS reminders (
-      id BIGSERIAL PRIMARY KEY,
-      guild_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      channel_id TEXT NOT NULL,
-      text TEXT NOT NULL,
-      execute_at BIGINT NOT NULL,
-      done BOOLEAN NOT NULL DEFAULT FALSE
-    );
-    CREATE TABLE IF NOT EXISTS activity (
-      id BIGSERIAL PRIMARY KEY,
-      guild_id TEXT,
-      user_id TEXT,
-      action TEXT NOT NULL,
-      details TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS oauth_states (
-      state TEXT PRIMARY KEY,
-      provider TEXT NOT NULL,
-      created_at BIGINT NOT NULL,
-      existing_sid TEXT
-    );
-    CREATE INDEX IF NOT EXISTS oauth_states_created_at_idx ON oauth_states(created_at);
-    CREATE TABLE IF NOT EXISTS dashboard_sessions (
-      sid TEXT PRIMARY KEY,
-      session_data JSONB NOT NULL,
-      last_seen BIGINT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS dashboard_sessions_last_seen_idx ON dashboard_sessions(last_seen);
   `);
+  const migrationDir = new URL('./migrations/', import.meta.url);
+  const migrations = fs.readdirSync(migrationDir).filter(name => /^\\d+_[a-z0-9_-]+\\.sql$/i.test(name)).sort();
+  for (const version of migrations) {
+    const existing = await dbQuery('SELECT 1 FROM schema_migrations WHERE version=$1', [version]);
+    if (existing?.rowCount) continue;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(fs.readFileSync(new URL(version, migrationDir), 'utf8'));
+      await client.query('INSERT INTO schema_migrations(version) VALUES($1)', [version]);
+      await client.query('COMMIT');
+      console.log('Applied database migration:', version);
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 }
 
 async function getConfig(guildId) {
@@ -313,19 +251,6 @@ async function getWarnings(guildId, userId) {
     return r.rows;
   }
   return memory.warnings.get(`${guildId}:${userId}`) || [];
-}
-
-function normalizeMediaUrl(value) {
-  if (!value) return null;
-  try {
-    const url = new URL(String(value));
-    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Media URL phải dùng http hoặc https.');
-    if (url.toString().length > 2048) throw new Error('Media URL quá dài.');
-    return url.toString();
-  } catch (error) {
-    if (error.message === 'Media URL phải dùng http hoặc https.' || error.message === 'Media URL quá dài.') throw error;
-    throw new Error('Media URL không hợp lệ.');
-  }
 }
 
 async function setAfk(guildId, userId, reason, mediaUrl = null) {
@@ -1408,10 +1333,7 @@ async function runCommand(name, ctx) {
       const member = target || user;
       if (!member) throw new Error('Không tìm thấy thành viên.');
       const profile = await ensureCommunityProfile(guild.id, member.id);
-      const xp = Number(profile.xp) || 0;
-      const level = Math.floor(xp / 100);
-      const progress = xp % 100;
-      const need = 100;
+      const { xp, level, progress, need } = getLevelProgress(profile.xp);
       return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle('✨ Rank · ' + (member.user.globalName || member.user.username))
         .setThumbnail(member.user.displayAvatarURL({ size: 128 }))
         .setDescription('**Level ' + level + '** · ' + xp + ' XP tổng\n`' + progressBar(progress, need) + '` ' + progress + '/100 XP tới level tiếp theo')
@@ -1825,7 +1747,7 @@ bot.on('messageCreate', async message => {
     const prefix = cfg.prefix || '!';
     if (!message.content.startsWith(prefix) && message.content.trim().length >= 4) {
       try {
-        const gain = XP_PER_MESSAGE_MIN + Math.floor(Math.random() * (XP_PER_MESSAGE_MAX - XP_PER_MESSAGE_MIN + 1));
+        const gain = calculateMessageXp(Math.random(), XP_PER_MESSAGE_MIN, XP_PER_MESSAGE_MAX);
         const profile = await awardCommunityXp(message.guild.id, message.author.id, gain);
         if (profile && Math.floor((profile.xp - profile.gain) / 100) < profile.level) {
           await message.channel.send('🎉 <@' + message.author.id + '> lên **Level ' + profile.level + '**! Dùng `/rank` để xem tiến độ.').catch(() => {});
@@ -2356,33 +2278,10 @@ app.get('/api/overview', requireAuth, async (req, res) => {
 
 const ROOT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
-const PUBLIC_INDEX = path.join(PUBLIC_DIR, 'index.html');
-const PUBLIC_CSS = path.join(PUBLIC_DIR, 'style.css');
-const PUBLIC_JS = path.join(PUBLIC_DIR, 'script.js');
-const ROOT_INDEX = path.join(ROOT_DIR, 'index.html');
-const ROOT_CSS = path.join(ROOT_DIR, 'style.css');
-const ROOT_JS = path.join(ROOT_DIR, 'script.js');
+const INDEX_FILE = path.join(PUBLIC_DIR, 'index.html');
 
-// Use /public only when its complete frontend bundle exists.
-// A partial /public folder must never make /style.css or /script.js fall through to index.html.
-const PUBLIC_BUNDLE_READY = [PUBLIC_INDEX, PUBLIC_CSS, PUBLIC_JS].every(file => fs.existsSync(file) && fs.statSync(file).size > 64);
-const WEB_DIR = PUBLIC_BUNDLE_READY ? PUBLIC_DIR : ROOT_DIR;
-const INDEX_FILE = PUBLIC_BUNDLE_READY ? PUBLIC_INDEX : ROOT_INDEX;
-
-// Explicit asset routes: CSS/JS must never be swallowed by the SPA fallback.
-app.get('/style.css', (req, res, next) => {
-  const file = PUBLIC_BUNDLE_READY ? PUBLIC_CSS : ROOT_CSS;
-  if (fs.existsSync(file)) return res.sendFile(file);
-  next();
-});
-
-app.get('/script.js', (req, res, next) => {
-  const file = PUBLIC_BUNDLE_READY ? PUBLIC_JS : ROOT_JS;
-  if (fs.existsSync(file)) return res.sendFile(file);
-  next();
-});
-
-app.use(express.static(WEB_DIR, { extensions: ['html'] }));
+// Only the deliberately published public/ directory is served to browsers.
+app.use(express.static(PUBLIC_DIR, { extensions: ['html'] }));
 app.get('/{*splat}', (req, res) => {
   const requested = String(req.path || '');
   if (/\.(?:css|js|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|mp3|wav|mp4)$/i.test(requested)) {

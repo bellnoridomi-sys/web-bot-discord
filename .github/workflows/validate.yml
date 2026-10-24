@@ -19,25 +19,21 @@ jobs:
       - name: Check server and dashboard JavaScript syntax
         run: |
           node --check server.js
-          node --check script.js
           node --check public/script.js
           node --check lib/role-utils.js
           node --check lib/security-utils.js
           node --check lib/ticket-utils.js
+          node --check lib/media-utils.js
+          node --check lib/community-utils.js
           node --test tests/*.test.js
-      - name: Check root and public bundles stay synchronized
-        run: |
-          cmp index.html public/index.html
-          cmp script.js public/script.js
-          cmp style.css public/style.css
       - name: Check critical dashboard and reaction-role hooks exist
         run: |
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import assert from 'node:assert/strict';
           const server = fs.readFileSync('server.js', 'utf8');
-          const html = fs.readFileSync('index.html', 'utf8');
-          const client = fs.readFileSync('script.js', 'utf8');
+          const html = fs.readFileSync('public/index.html', 'utf8');
+          const client = fs.readFileSync('public/script.js', 'utf8');
           for (const route of [
             "app.post('/api/guilds/:guildId/roles-panel'",
             "app.post('/api/guilds/:guildId/announce'",
@@ -60,6 +56,7 @@ jobs:
           assert.ok(!server.includes('parseReactionRoleBindingFromMessage'), 'Reaction roles must never be parsed from embed text');
           assert.ok(server.includes("process.on('unhandledRejection'"), 'Missing runtime error reporting hook');
           assert.ok(server.includes("bot.on('error'"), 'Missing Discord client error reporting hook');
+          assert.ok(server.includes("const migrationDir = new URL('./migrations/', import.meta.url)"), 'Missing versioned migration runner');
           assert.ok(server.includes('CREATE TABLE IF NOT EXISTS community_profiles'), 'Missing persistent community profile table');
           for (const name of ['rank','balance','daily','work','leaderboard','welcome-setup','goodbye-setup']) {
             assert.ok(server.includes(`setName('${name}')`), `Missing slash command: ${name}`);
