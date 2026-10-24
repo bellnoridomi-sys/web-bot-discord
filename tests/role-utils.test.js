@@ -115,3 +115,11 @@ test('audit reasons include actor and normalize line breaks within Discord limit
   assert.equal(formatAuditReason('Staff\nName', 'Repeated spam'), '[by Staff Name] Repeated spam');
   assert.ok(formatAuditReason('Moderator', 'x'.repeat(900), 512).length <= 512);
 });
+
+test('temporary ban expiry check handles future, due, and invalid timestamps', async () => {
+  const { isExpiryDue } = await import('../lib/moderation-utils.js');
+  assert.equal(isExpiryDue(2000, 1000), false);
+  assert.equal(isExpiryDue(1000, 1000), true);
+  assert.equal(isExpiryDue('bad', 1000), false);
+  assert.equal(isExpiryDue(0, 1000), false);
+});

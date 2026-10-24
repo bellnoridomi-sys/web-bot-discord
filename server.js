@@ -86,7 +86,8 @@ const memory = {
   communityProfiles: new Map(),
   moderationCases: [],
   vouches: new Map(),
-  scamBlacklist: new Map()
+  scamBlacklist: new Map(),
+  tempBans: new Map()
 };
 
 const databaseHost = (() => { try { return new URL(process.env.DATABASE_URL || '').hostname; } catch { return ''; } })();
@@ -255,6 +256,42 @@ async function getWarnings(guildId, userId) {
     return r.rows;
   }
   return memory.warnings.get(`${guildId}:${userId}`) || [];
+}
+async function scheduleTempBan(guildId, userId, moderatorId, reason, expiresAt) {
+  const row = { guild_id: guildId, user_id: userId, moderator_id: moderatorId, reason: String(reason || '').slice(0, 1000), expires_at: Number(expiresAt), created_at: new Date().toISOString() };
+  if (pool) {
+    await dbQuery('INSERT INTO temp_bans(guild_id,user_id,moderator_id,reason,expires_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(guild_id,user_id) DO UPDATE SET moderator_id=EXCLUDED.moderator_id,reason=EXCLUDED.reason,expires_at=EXCLUDED.expires_at,created_at=NOW()', [guildId, userId, moderatorId, row.reason, row.expires_at]);
+  } else memory.tempBans.set(guildId + ':' + userId, row);
+}
+async function removeTempBan(guildId, userId) {
+  if (pool) await dbQuery('DELETE FROM temp_bans WHERE guild_id=$1 AND user_id=$2', [guildId, userId]);
+  else memory.tempBans.delete(guildId + ':' + userId);
+}
+async function tempBanTick() {
+  if (!bot.isReady()) return;
+  const now = Date.now();
+  let due = [];
+  if (pool) {
+    const result = await dbQuery('SELECT guild_id,user_id,moderator_id,reason,expires_at FROM temp_bans WHERE expires_at <= $1 ORDER BY expires_at LIMIT 25', [now]);
+    due = result.rows;
+  } else {
+    due = [...memory.tempBans.values()].filter(row => isExpiryDue(row.expires_at, now));
+  }
+  for (const item of due) {
+    const guild = bot.guilds.cache.get(item.guild_id);
+    if (!guild) continue;
+    try {
+      await guild.members.unban(item.user_id, formatAuditReason('Aki Dev auto-unban', 'Temporary ban expired'));
+      await removeTempBan(item.guild_id, item.user_id);
+      await addModerationCase(item.guild_id, item.user_id, item.moderator_id, 'tempban-expired', 'Temporary ban expired at ' + new Date(Number(item.expires_at)).toISOString()).catch(() => {});
+    } catch (error) {
+      if (error?.code === 10026 || error?.status === 404) {
+        await removeTempBan(item.guild_id, item.user_id).catch(() => {});
+      } else {
+        console.warn('Temporary unban failed:', { guildId: item.guild_id, error: error?.message || 'unknown error' });
+      }
+    }
+  }
 }
 async function addModerationCase(guildId, targetId, moderatorId, action, reason) {
   const cleanReason = String(reason || 'No reason').slice(0, 1000);
@@ -951,6 +988,7 @@ const commands = [
   new SlashCommandBuilder().setName('unlock').setDescription('Mở khoá kênh hiện tại.').setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels.toString()),
   new SlashCommandBuilder().setName('kick').setDescription('Kick thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.KickMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
   new SlashCommandBuilder().setName('ban').setDescription('Ban thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.BanMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
+  new SlashCommandBuilder().setName('tempban').setDescription('Ban tạm thời và tự gỡ khi hết hạn.').setDefaultMemberPermissions(PermissionFlagsBits.BanMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addIntegerOption(o => o.setName('minutes').setDescription('1–40320 phút').setMinValue(1).setMaxValue(40320).setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
   new SlashCommandBuilder().setName('timeout').setDescription('Timeout thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addIntegerOption(o => o.setName('minutes').setDescription('1–40320 phút').setMinValue(1).setMaxValue(40320).setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
   new SlashCommandBuilder().setName('unban').setDescription('Gỡ ban theo Discord user ID.').setDefaultMemberPermissions(PermissionFlagsBits.BanMembers.toString()).addStringOption(o => o.setName('user_id').setDescription('Discord user ID').setMinLength(17).setMaxLength(20).setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
   new SlashCommandBuilder().setName('untimeout').setDescription('Gỡ timeout thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
@@ -977,7 +1015,7 @@ const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Nhắc việc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
-  ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
+  ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
@@ -1541,7 +1579,7 @@ async function runCommand(name, ctx) {
       ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
       const m = target || user;
       const list = await getWarnings(guild.id, m.id);
-      return reply(`📋 **Warnings · ${m.user.globalName || m.user.username}**\n${list.length ? list.map((w, i) => `${i + 1}. ${w.reason}`).join('\n') : 'Không có cảnh cáo.'}`);
+      return reply(`📋 **Warnings · ${m.user.globalName || m.user.username}**\n${list.length ? list.map((w, i) => `#${w.id || i + 1} · ${w.reason}`).join('\n') : 'Không có cảnh cáo.'}`);
     }
     case 'clear': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageMessages);
@@ -1593,6 +1631,7 @@ async function runCommand(name, ctx) {
       if (!/^[0-9]{17,20}$/.test(targetId)) throw new Error('Discord user ID không hợp lệ.');
       const audit = formatAuditReason(userName, args.reason);
       await guild.members.unban(targetId, audit);
+      await removeTempBan(guild.id, targetId);
       const record = await addModerationCase(guild.id, targetId, userId, 'unban', audit);
       return reply('✅ Đã gỡ ban cho ID `' + targetId + '`. Case #' + record.case_id + '.');
     }
@@ -1665,6 +1704,21 @@ async function runCommand(name, ctx) {
         .setFooter({ text: 'Hãy kiểm tra chứng cứ trước khi đưa ra kết luận.' }).setTimestamp());
     }
 
+    case 'tempban': {
+      ensureMemberPermission(user, PermissionFlagsBits.BanMembers);
+      if (!target) throw new Error('Không tìm thấy target.');
+      ensureTargetBelowInvoker(user, target, 'tempban');
+      if (!target.bannable) throw new Error('Bot không thể ban target này.');
+      const minutes = Number(args.minutes);
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > 40320) throw new Error('Thời lượng tempban phải từ 1 đến 40320 phút.');
+      const audit = formatAuditReason(userName, args.reason);
+      const expiresAt = Date.now() + minutes * 60_000;
+      await scheduleTempBan(guild.id, target.id, userId, audit, expiresAt);
+      try { await target.ban({ reason: audit, deleteMessageSeconds: 0 }); }
+      catch (error) { await removeTempBan(guild.id, target.id).catch(() => {}); throw error; }
+      const record = await addModerationCase(guild.id, target.id, userId, 'tempban', audit + ' · expires ' + new Date(expiresAt).toISOString());
+      return reply('⏳ Đã tempban **' + (target.user.globalName || target.user.username) + '** trong ' + minutes + ' phút. Bot sẽ tự gỡ ban khi hết hạn. Case #' + record.case_id + '.');
+    }
     case 'timeout': {
       ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
       if (!target) throw new Error('Không tìm thấy target.');
@@ -1736,7 +1790,7 @@ function extractInteractionArgs(interaction) {
   if (['ticket-setup', 'role-panel'].includes(interaction.commandName)) out.channel = interaction.options.getChannel('channel')?.id || undefined;
   if (['warn', 'kick', 'ban', 'timeout'].includes(interaction.commandName)) { out.user = getUserId(); }
   if (interaction.commandName === 'warn' || interaction.commandName === 'kick' || interaction.commandName === 'ban' || interaction.commandName === 'timeout') out.reason = interaction.options.getString('reason');
-  if (interaction.commandName === 'timeout') out.minutes = interaction.options.getInteger('minutes');
+  if (['timeout', 'tempban'].includes(interaction.commandName)) out.minutes = interaction.options.getInteger('minutes');
   if (interaction.commandName === 'untimeout') out.reason = interaction.options.getString('reason');
   if (interaction.commandName === 'unban') { out.userId = interaction.options.getString('user_id'); out.reason = interaction.options.getString('reason'); }
   if (interaction.commandName === 'delwarn') out.warningId = interaction.options.getInteger('warning_id');
@@ -1868,7 +1922,7 @@ bot.on('interactionCreate', async interaction => {
     }
   }
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
-  const ephemeralCommands = new Set(['warnings', 'role', 'warn', 'kick', 'ban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
+  const ephemeralCommands = new Set(['warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
   try {
     // Acknowledge all slash commands before doing network/database work.
     await interaction.deferReply({ ephemeral: ephemeralCommands.has(interaction.commandName) });
@@ -2489,6 +2543,7 @@ setInterval(() => {
   persistAllSessions().catch(error => console.error('Persistent session sync failed:', error.message));
 }, 30_000);
 setInterval(reminderTick, 10_000);
+setInterval(() => tempBanTick().catch(error => console.warn('Tempban expiry worker failed:', error?.message || 'unknown error')), 10_000);
 
 async function boot() {
   await initDb();
