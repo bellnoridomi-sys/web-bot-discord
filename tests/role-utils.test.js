@@ -104,3 +104,14 @@ test('message XP rolls are deterministic and bounded', () => {
   assert.equal(calculateMessageXp(0.5, 8, 14), 11);
   assert.equal(calculateMessageXp(5, 8, 14), 14);
 });
+
+import { vouchDenialReason, formatAuditReason } from '../lib/moderation-utils.js';
+test('vouch rules reject self-vouch and duplicate pairs', () => {
+  assert.equal(vouchDenialReason('111111111111111111', '111111111111111111', false), 'self-vouch');
+  assert.equal(vouchDenialReason('111111111111111111', '222222222222222222', true), 'duplicate-vouch');
+  assert.equal(vouchDenialReason('111111111111111111', '222222222222222222', false), null);
+});
+test('audit reasons include actor and normalize line breaks within Discord limit', () => {
+  assert.equal(formatAuditReason('Staff\nName', 'Repeated spam'), '[by Staff Name] Repeated spam');
+  assert.ok(formatAuditReason('Moderator', 'x'.repeat(900), 512).length <= 512);
+});

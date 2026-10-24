@@ -11,6 +11,7 @@ import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sa
 import { isAllowedOrigin } from './lib/security-utils.js';
 import { normalizeMediaUrl } from './lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
+import { vouchDenialReason, formatAuditReason } from './lib/moderation-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
@@ -82,7 +83,10 @@ const memory = {
   afk: new Map(),
   reactionRolePanels: new Map(),
   reactionRoleBindings: new Map(),
-  communityProfiles: new Map()
+  communityProfiles: new Map(),
+  moderationCases: [],
+  vouches: new Map(),
+  scamBlacklist: new Map()
 };
 
 const databaseHost = (() => { try { return new URL(process.env.DATABASE_URL || '').hostname; } catch { return ''; } })();
@@ -240,7 +244,7 @@ async function addWarning(guildId, userId, moderatorId, reason) {
   } else {
     const key = `${guildId}:${userId}`;
     const list = memory.warnings.get(key) || [];
-    list.push({ user_id: userId, moderator_id: moderatorId, reason, created_at: new Date().toISOString() });
+    list.push({ id: Date.now(), guild_id: guildId, user_id: userId, moderator_id: moderatorId, reason, created_at: new Date().toISOString() });
     memory.warnings.set(key, list);
   }
 }
@@ -252,6 +256,86 @@ async function getWarnings(guildId, userId) {
   }
   return memory.warnings.get(`${guildId}:${userId}`) || [];
 }
+async function addModerationCase(guildId, targetId, moderatorId, action, reason) {
+  const cleanReason = String(reason || 'No reason').slice(0, 1000);
+  if (pool) {
+    const result = await dbQuery('INSERT INTO moderation_cases(guild_id,target_user_id,moderator_id,action,reason) VALUES($1,$2,$3,$4,$5) RETURNING case_id,guild_id,target_user_id,moderator_id,action,reason,created_at', [guildId, targetId, moderatorId, action, cleanReason]);
+    return result.rows[0];
+  }
+  const row = { case_id: memory.moderationCases.length + 1, guild_id: guildId, target_user_id: targetId, moderator_id: moderatorId, action, reason: cleanReason, created_at: new Date().toISOString() };
+  memory.moderationCases.unshift(row);
+  return row;
+}
+async function getModerationCase(guildId, caseId) {
+  if (pool) {
+    const result = await dbQuery('SELECT case_id,guild_id,target_user_id,moderator_id,action,reason,created_at FROM moderation_cases WHERE guild_id=$1 AND case_id=$2', [guildId, caseId]);
+    return result.rows[0] || null;
+  }
+  return memory.moderationCases.find(row => row.guild_id === guildId && Number(row.case_id) === Number(caseId)) || null;
+}
+async function getModerationLog(guildId, targetId = null, limit = 10) {
+  const safeLimit = Math.max(1, Math.min(25, Number(limit) || 10));
+  if (pool) {
+    const result = targetId
+      ? await dbQuery('SELECT case_id,target_user_id,moderator_id,action,reason,created_at FROM moderation_cases WHERE guild_id=$1 AND target_user_id=$2 ORDER BY case_id DESC LIMIT $3', [guildId, targetId, safeLimit])
+      : await dbQuery('SELECT case_id,target_user_id,moderator_id,action,reason,created_at FROM moderation_cases WHERE guild_id=$1 ORDER BY case_id DESC LIMIT $2', [guildId, safeLimit]);
+    return result.rows;
+  }
+  return memory.moderationCases.filter(row => row.guild_id === guildId && (!targetId || row.target_user_id === targetId)).slice(0, safeLimit);
+}
+async function deleteWarning(guildId, warningId) {
+  if (pool) {
+    const result = await dbQuery('DELETE FROM warnings WHERE guild_id=$1 AND id=$2 RETURNING id,user_id,moderator_id,reason', [guildId, warningId]);
+    return result.rows[0] || null;
+  }
+  for (const list of memory.warnings.values()) {
+    const index = list.findIndex(row => row.guild_id === guildId && Number(row.id) === Number(warningId));
+    if (index >= 0) return list.splice(index, 1)[0];
+  }
+  return null;
+}
+async function addVouch(guildId, authorId, targetId, message) {
+  const denial = vouchDenialReason(authorId, targetId, false);
+  if (denial) return { ok: false, reason: denial };
+  const cleanMessage = String(message || '').trim().slice(0, 500);
+  if (pool) {
+    const result = await dbQuery('INSERT INTO vouches(guild_id,author_id,target_id,message) VALUES($1,$2,$3,$4) ON CONFLICT(guild_id,author_id,target_id) DO NOTHING RETURNING created_at', [guildId, authorId, targetId, cleanMessage]);
+    if (!result.rowCount) return { ok: false, reason: 'duplicate-vouch' };
+    return { ok: true, created_at: result.rows[0].created_at };
+  }
+  const key = guildId + ':' + authorId + ':' + targetId;
+  if (memory.vouches.has(key)) return { ok: false, reason: 'duplicate-vouch' };
+  const row = { guild_id: guildId, author_id: authorId, target_id: targetId, message: cleanMessage, created_at: new Date().toISOString() };
+  memory.vouches.set(key, row);
+  return { ok: true, created_at: row.created_at };
+}
+async function getVouches(guildId, targetId) {
+  if (pool) {
+    const rows = await dbQuery('SELECT author_id,target_id,message,created_at FROM vouches WHERE guild_id=$1 AND target_id=$2 ORDER BY created_at DESC LIMIT 10', [guildId, targetId]);
+    const count = await dbQuery('SELECT COUNT(*)::int AS total FROM vouches WHERE guild_id=$1 AND target_id=$2', [guildId, targetId]);
+    return { total: Number(count.rows[0]?.total || 0), rows: rows.rows };
+  }
+  const all = [...memory.vouches.values()].filter(row => row.guild_id === guildId && row.target_id === targetId).sort((a,b) => String(b.created_at).localeCompare(String(a.created_at)));
+  return { total: all.length, rows: all.slice(0, 10) };
+}
+async function addScamFlag(guildId, targetId, addedBy, reason) {
+  const cleanReason = String(reason || '').trim().slice(0, 500);
+  if (pool) {
+    const result = await dbQuery('INSERT INTO scam_blacklist(guild_id,user_id,added_by,reason) VALUES($1,$2,$3,$4) ON CONFLICT(guild_id,user_id) DO UPDATE SET added_by=EXCLUDED.added_by,reason=EXCLUDED.reason,created_at=NOW() RETURNING user_id', [guildId, targetId, addedBy, cleanReason]);
+    return result.rows[0];
+  }
+  const row = { guild_id: guildId, user_id: targetId, added_by: addedBy, reason: cleanReason, created_at: new Date().toISOString() };
+  memory.scamBlacklist.set(guildId + ':' + targetId, row);
+  return row;
+}
+async function checkScamFlag(guildId, targetId) {
+  if (pool) {
+    const result = await dbQuery('SELECT user_id,added_by,reason,created_at FROM scam_blacklist WHERE guild_id=$1 AND user_id=$2', [guildId, targetId]);
+    return result.rows[0] || null;
+  }
+  return memory.scamBlacklist.get(guildId + ':' + targetId) || null;
+}
+
 
 async function setAfk(guildId, userId, reason, mediaUrl = null) {
   const since = Date.now();
@@ -868,6 +952,15 @@ const commands = [
   new SlashCommandBuilder().setName('kick').setDescription('Kick thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.KickMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
   new SlashCommandBuilder().setName('ban').setDescription('Ban thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.BanMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
   new SlashCommandBuilder().setName('timeout').setDescription('Timeout thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addIntegerOption(o => o.setName('minutes').setDescription('1–40320 phút').setMinValue(1).setMaxValue(40320).setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
+  new SlashCommandBuilder().setName('unban').setDescription('Gỡ ban theo Discord user ID.').setDefaultMemberPermissions(PermissionFlagsBits.BanMembers.toString()).addStringOption(o => o.setName('user_id').setDescription('Discord user ID').setMinLength(17).setMaxLength(20).setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
+  new SlashCommandBuilder().setName('untimeout').setDescription('Gỡ timeout thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(false)),
+  new SlashCommandBuilder().setName('delwarn').setDescription('Xoá một cảnh cáo.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addIntegerOption(o => o.setName('warning_id').setDescription('ID cảnh cáo').setMinValue(1).setRequired(true)),
+  new SlashCommandBuilder().setName('case').setDescription('Xem case moderation theo ID.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addIntegerOption(o => o.setName('case_id').setDescription('Case ID').setMinValue(1).setRequired(true)),
+  new SlashCommandBuilder().setName('modlog').setDescription('Xem nhật ký moderation của server/thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addUserOption(o => o.setName('user').setDescription('Lọc thành viên (tuỳ chọn)').setRequired(false)),
+  new SlashCommandBuilder().setName('vouch').setDescription('Đánh giá giao dịch một lần cho mỗi cặp.').addUserOption(o => o.setName('user').setDescription('Thành viên nhận vouch').setRequired(true)).addStringOption(o => o.setName('message').setDescription('Đánh giá').setMaxLength(500).setRequired(true)),
+  new SlashCommandBuilder().setName('vouches').setDescription('Xem đánh giá của thành viên.').addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(false)),
+  new SlashCommandBuilder().setName('scamcheck').setDescription('Kiểm tra ID trong danh sách cảnh báo scammer.').addStringOption(o => o.setName('user_id').setDescription('Discord user ID').setMinLength(17).setMaxLength(20).setRequired(true)),
+  new SlashCommandBuilder().setName('scam-add').setDescription('Thêm ID vào danh sách cảnh báo.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addStringOption(o => o.setName('user_id').setDescription('Discord user ID').setMinLength(17).setMaxLength(20).setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do/chứng cứ tham chiếu').setMaxLength(500).setRequired(true)),
   new SlashCommandBuilder().setName('role').setDescription('Thêm/gỡ role.').setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles.toString()).addStringOption(o => o.setName('mode').setDescription('add hoặc remove').setRequired(true).addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' })).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addRoleOption(o => o.setName('role').setDescription('Role').setRequired(true)),
   new SlashCommandBuilder().setName('legit').setDescription('Đánh dấu thành viên đã được staff xác minh.').setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên được xác minh').setRequired(true)),
   new SlashCommandBuilder().setName('ticket-setup').setDescription('Đăng bảng mở ticket hỗ trợ.').setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh đăng bảng ticket').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(false)),
@@ -884,7 +977,7 @@ const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Nhắc việc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
-  ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['timeout', 'Timeout'], ['role', 'Quản lý role'],
+  ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
@@ -1437,10 +1530,12 @@ async function runCommand(name, ctx) {
       if (!target) throw new Error('Không tìm thấy target.');
       ensureTargetBelowInvoker(user, target, 'cảnh cáo');
       if (target.id === guild.ownerId) throw new Error('Không thể cảnh cáo owner.');
-      await addWarning(guild.id, target.id, userId, String(args.reason));
+      const audit = formatAuditReason(userName, args.reason);
+      await addWarning(guild.id, target.id, userId, audit);
+      const record = await addModerationCase(guild.id, target.id, userId, 'warn', audit);
       const count = (await getWarnings(guild.id, target.id)).length;
-      await target.send(`⚠️ Bạn vừa nhận cảnh cáo tại **${guild.name}**. Lý do: ${args.reason}`).catch(() => {});
-      return reply(`⚠️ Đã cảnh cáo **${target.user.globalName || target.user.username}**. Tổng: **${count}**.`);
+      await target.send(`⚠️ Bạn vừa nhận cảnh cáo tại **${guild.name}**. Lý do: ${String(args.reason || 'Không có lý do').slice(0, 800)}`).catch(() => {});
+      return reply(`⚠️ Đã cảnh cáo **${target.user.globalName || target.user.username}**. Tổng: **${count}**. Case #${record.case_id}.`);
     }
     case 'warnings': {
       ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
@@ -1476,24 +1571,109 @@ async function runCommand(name, ctx) {
       if (!target) throw new Error('Không tìm thấy target.');
       ensureTargetBelowInvoker(user, target, 'kick');
       if (!target.kickable) throw new Error('Bot không thể kick target này.');
-      await target.kick(args.reason || 'No reason');
-      return reply(`👢 Đã kick **${target.user.globalName || target.user.username}**.`);
+      const audit = formatAuditReason(userName, args.reason);
+      await target.kick(audit);
+      const record = await addModerationCase(guild.id, target.id, userId, 'kick', audit);
+      return reply(`👢 Đã kick **${target.user.globalName || target.user.username}**. Case #${record.case_id}.`);
     }
     case 'ban': {
       ensureMemberPermission(user, PermissionFlagsBits.BanMembers);
       if (!target) throw new Error('Không tìm thấy target.');
       ensureTargetBelowInvoker(user, target, 'ban');
       if (!target.bannable) throw new Error('Bot không thể ban target này.');
-      await target.ban({ reason: args.reason || 'No reason', deleteMessageSeconds: 0 });
-      return reply(`⛔ Đã ban **${target.user.globalName || target.user.username}**.`);
+      const audit = formatAuditReason(userName, args.reason);
+      await target.ban({ reason: audit, deleteMessageSeconds: 0 });
+      const record = await addModerationCase(guild.id, target.id, userId, 'ban', audit);
+      return reply(`⛔ Đã ban **${target.user.globalName || target.user.username}**. Case #${record.case_id}.`);
     }
+
+    case 'unban': {
+      ensureMemberPermission(user, PermissionFlagsBits.BanMembers);
+      const targetId = String(args.userId || '');
+      if (!/^[0-9]{17,20}$/.test(targetId)) throw new Error('Discord user ID không hợp lệ.');
+      const audit = formatAuditReason(userName, args.reason);
+      await guild.members.unban(targetId, audit);
+      const record = await addModerationCase(guild.id, targetId, userId, 'unban', audit);
+      return reply('✅ Đã gỡ ban cho ID `' + targetId + '`. Case #' + record.case_id + '.');
+    }
+    case 'untimeout': {
+      ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
+      if (!target) throw new Error('Không tìm thấy thành viên.');
+      ensureTargetBelowInvoker(user, target, 'gỡ timeout');
+      const audit = formatAuditReason(userName, args.reason);
+      await target.timeout(null, audit);
+      const record = await addModerationCase(guild.id, target.id, userId, 'untimeout', audit);
+      return reply('✅ Đã gỡ timeout cho **' + (target.user.globalName || target.user.username) + '**. Case #' + record.case_id + '.');
+    }
+    case 'delwarn': {
+      ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
+      const deleted = await deleteWarning(guild.id, args.warningId);
+      if (!deleted) throw new Error('Không tìm thấy cảnh cáo trong server này.');
+      const record = await addModerationCase(guild.id, deleted.user_id, userId, 'delwarn', formatAuditReason(userName, 'Xoá cảnh cáo #' + args.warningId));
+      return reply('🧹 Đã xoá cảnh cáo #' + args.warningId + '. Case #' + record.case_id + '.');
+    }
+    case 'case': {
+      ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
+      const item = await getModerationCase(guild.id, args.caseId);
+      if (!item) throw new Error('Không tìm thấy case trong server này.');
+      return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle('🧾 Moderation Case #' + item.case_id).addFields(
+        { name: 'Action', value: String(item.action).slice(0, 100), inline: true },
+        { name: 'Thành viên', value: '<@' + item.target_user_id + '> (' + item.target_user_id + ')', inline: false },
+        { name: 'Moderator', value: '<@' + item.moderator_id + '> (' + item.moderator_id + ')', inline: false },
+        { name: 'Lý do / audit', value: String(item.reason || 'No reason').slice(0, 1000), inline: false },
+        { name: 'Thời gian', value: new Date(item.created_at).toISOString(), inline: false }
+      ).setTimestamp());
+    }
+    case 'modlog': {
+      ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
+      const items = await getModerationLog(guild.id, args.user || null, 10);
+      if (!items.length) return reply('Chưa có case moderation trong phạm vi này.');
+      const body = items.map(item => '#' + item.case_id + ' · **' + item.action + '** · <@' + item.target_user_id + '> · ' + String(item.reason || 'No reason').slice(0, 160)).join('\n');
+      return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle('🧾 Modlog · ' + (args.user ? 'thành viên' : 'server')).setDescription(body).setFooter({ text: 'Dùng /case case_id để xem chi tiết' }).setTimestamp());
+    }
+    case 'vouch': {
+      if (!target) throw new Error('Không tìm thấy thành viên nhận vouch.');
+      if (vouchDenialReason(userId, target.id, false) === 'self-vouch') throw new Error('Bạn không thể tự vouch cho chính mình.');
+      const result = await addVouch(guild.id, userId, target.id, args.message);
+      if (!result.ok && result.reason === 'duplicate-vouch') throw new Error('Bạn đã vouch cho thành viên này rồi; mỗi cặp chỉ được vouch một lần.');
+      await addActivity(guild.id, userId, 'vouch:created', '⭐ Đã vouch cho ' + (target.user.globalName || target.user.username) + '.').catch(() => {});
+      return reply('⭐ Cảm ơn bạn đã vouch cho **' + (target.user.globalName || target.user.username) + '**.');
+    }
+    case 'vouches': {
+      const member = target || user;
+      if (!member) throw new Error('Không tìm thấy thành viên.');
+      const result = await getVouches(guild.id, member.id);
+      if (!result.rows.length) return reply('Chưa có vouch cho **' + (member.user.globalName || member.user.username) + '**. Tổng: ' + result.total + '.');
+      const body = result.rows.map((row, i) => (i + 1) + '. <@' + row.author_id + '> — ' + String(row.message || 'Không có ghi chú').slice(0, 250)).join('\n');
+      return embedPayload(new EmbedBuilder().setColor(0x57F287).setTitle('⭐ Vouches · ' + (member.user.globalName || member.user.username)).setDescription(body).setFooter({ text: 'Tổng vouch: ' + result.total + ' · hiển thị tối đa 10 gần nhất' }).setTimestamp());
+    }
+    case 'scam-add': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      if (!/^[0-9]{17,20}$/.test(String(args.userId || ''))) throw new Error('Discord user ID không hợp lệ.');
+      const row = await addScamFlag(guild.id, args.userId, userId, args.reason);
+      const record = await addModerationCase(guild.id, args.userId, userId, 'scam-add', formatAuditReason(userName, args.reason));
+      await addActivity(guild.id, userId, 'scam:blacklist-add', '🚨 Thêm ID ' + args.userId + ' vào danh sách cảnh báo.').catch(() => {});
+      return reply('🚨 Đã thêm ID `' + row.user_id + '` vào danh sách cảnh báo của server. Case #' + record.case_id + '.');
+    }
+    case 'scamcheck': {
+      if (!/^[0-9]{17,20}$/.test(String(args.userId || ''))) throw new Error('Discord user ID không hợp lệ.');
+      const row = await checkScamFlag(guild.id, args.userId);
+      if (!row) return reply('✅ ID `' + args.userId + '` không có trong danh sách cảnh báo của server này. Điều đó không đảm bảo giao dịch an toàn.');
+      return embedPayload(new EmbedBuilder().setColor(0xED4245).setTitle('🚨 Cảnh báo scammer')
+        .setDescription('ID `' + row.user_id + '` đang có trong danh sách cảnh báo của server.\nLý do: ' + String(row.reason || 'Không có ghi chú').slice(0, 800))
+        .addFields({ name: 'Được thêm bởi', value: '<@' + row.added_by + '>', inline: true }, { name: 'Ngày', value: new Date(row.created_at).toISOString(), inline: true })
+        .setFooter({ text: 'Hãy kiểm tra chứng cứ trước khi đưa ra kết luận.' }).setTimestamp());
+    }
+
     case 'timeout': {
       ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
       if (!target) throw new Error('Không tìm thấy target.');
       ensureTargetBelowInvoker(user, target, 'timeout');
       if (!target.moderatable) throw new Error('Bot không thể timeout target này.');
-      await target.timeout(Number(args.minutes) * 60_000, args.reason || 'No reason');
-      return reply(`⏳ Đã timeout **${target.user.globalName || target.user.username}** trong **${args.minutes} phút**.`);
+      const audit = formatAuditReason(userName, args.reason);
+      await target.timeout(Number(args.minutes) * 60_000, audit);
+      const record = await addModerationCase(guild.id, target.id, userId, 'timeout', audit);
+      return reply(`⏳ Đã timeout **${target.user.globalName || target.user.username}** trong **${args.minutes} phút**. Case #${record.case_id}.`);
     }
     case 'role': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageRoles);
@@ -1552,11 +1732,18 @@ async function runCommand(name, ctx) {
 function extractInteractionArgs(interaction) {
   const getUserId = () => interaction.options.getUser('user')?.id;
   const out = {};
-  if (['userinfo', 'avatar', 'warnings', 'legit', 'rank', 'balance'].includes(interaction.commandName)) out.user = getUserId();
+  if (['userinfo', 'avatar', 'warnings', 'legit', 'rank', 'balance', 'vouch', 'vouches', 'untimeout', 'modlog'].includes(interaction.commandName)) out.user = getUserId();
   if (['ticket-setup', 'role-panel'].includes(interaction.commandName)) out.channel = interaction.options.getChannel('channel')?.id || undefined;
   if (['warn', 'kick', 'ban', 'timeout'].includes(interaction.commandName)) { out.user = getUserId(); }
   if (interaction.commandName === 'warn' || interaction.commandName === 'kick' || interaction.commandName === 'ban' || interaction.commandName === 'timeout') out.reason = interaction.options.getString('reason');
   if (interaction.commandName === 'timeout') out.minutes = interaction.options.getInteger('minutes');
+  if (interaction.commandName === 'untimeout') out.reason = interaction.options.getString('reason');
+  if (interaction.commandName === 'unban') { out.userId = interaction.options.getString('user_id'); out.reason = interaction.options.getString('reason'); }
+  if (interaction.commandName === 'delwarn') out.warningId = interaction.options.getInteger('warning_id');
+  if (interaction.commandName === 'case') out.caseId = interaction.options.getInteger('case_id');
+  if (interaction.commandName === 'vouch') out.message = interaction.options.getString('message');
+  if (interaction.commandName === 'scamcheck') out.userId = interaction.options.getString('user_id');
+  if (interaction.commandName === 'scam-add') { out.userId = interaction.options.getString('user_id'); out.reason = interaction.options.getString('reason'); }
   if (interaction.commandName === 'poll') for (const k of ['question','option1','option2','option3','option4']) out[k] = interaction.options.getString(k) || undefined;
   if (interaction.commandName === 'leaderboard') out.kind = interaction.options.getString('type') || 'levels';
   if (interaction.commandName === '8ball') out.question = interaction.options.getString('question');
@@ -1681,7 +1868,7 @@ bot.on('interactionCreate', async interaction => {
     }
   }
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
-  const ephemeralCommands = new Set(['warnings', 'role', 'warn', 'kick', 'ban', 'timeout', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
+  const ephemeralCommands = new Set(['warnings', 'role', 'warn', 'kick', 'ban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
   try {
     // Acknowledge all slash commands before doing network/database work.
     await interaction.deferReply({ ephemeral: ephemeralCommands.has(interaction.commandName) });
