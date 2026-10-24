@@ -12,6 +12,7 @@ import { isAllowedOrigin } from './lib/security-utils.js';
 import { normalizeMediaUrl } from './lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
 import { vouchDenialReason, formatAuditReason } from './lib/moderation-utils.js';
+import { parseDuration } from './lib/duration-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
@@ -76,6 +77,8 @@ const activityCache = [];
 const xpCooldowns = new Map();
 const runtimeErrorCooldowns = new Map();
 const memoryReminderCounts = new Map();
+const memoryReminderTimers = new Map();
+let nextMemoryReminderId = 1;
 const voiceReconnectTimers = new Map();
 const memory = {
   configs: new Map(),
@@ -87,7 +90,8 @@ const memory = {
   moderationCases: [],
   vouches: new Map(),
   scamBlacklist: new Map(),
-  tempBans: new Map()
+  tempBans: new Map(),
+  reminders: []
 };
 
 const databaseHost = (() => { try { return new URL(process.env.DATABASE_URL || '').hostname; } catch { return ''; } })();
@@ -413,16 +417,41 @@ async function scheduleReminder(guildId, userId, channelId, text, executeAt) {
   if (pool) {
     const pending = await dbQuery('SELECT COUNT(*)::int AS count FROM reminders WHERE guild_id=$1 AND user_id=$2 AND done=FALSE', [guildId, userId]);
     if (Number(pending?.rows?.[0]?.count || 0) >= MAX_PENDING_REMINDERS_PER_USER) throw new Error('Bạn chỉ được có tối đa ' + MAX_PENDING_REMINDERS_PER_USER + ' lời nhắc đang chờ trong server này.');
-    await dbQuery('INSERT INTO reminders(guild_id,user_id,channel_id,text,execute_at) VALUES($1,$2,$3,$4,$5)', [guildId, userId, channelId, text, executeAt]);
-    return;
+    const inserted = await dbQuery('INSERT INTO reminders(guild_id,user_id,channel_id,text,execute_at) VALUES($1,$2,$3,$4,$5) RETURNING id', [guildId, userId, channelId, text, executeAt]);
+    return Number(inserted.rows[0].id);
   }
   const key = reminderKey(guildId, userId), count = memoryReminderCounts.get(key) || 0;
   if (count >= MAX_PENDING_REMINDERS_PER_USER) throw new Error('Bạn chỉ được có tối đa ' + MAX_PENDING_REMINDERS_PER_USER + ' lời nhắc đang chờ trong server này.');
+  const id = nextMemoryReminderId++;
   memoryReminderCounts.set(key, count + 1);
+  memory.reminders.push({ id, guild_id: guildId, user_id: userId, channel_id: channelId, text: String(text), execute_at: executeAt, done: false });
+  return id;
 }
 function releaseMemoryReminder(guildId, userId) {
   const key = reminderKey(guildId, userId), count = memoryReminderCounts.get(key) || 0;
   if (count <= 1) memoryReminderCounts.delete(key); else memoryReminderCounts.set(key, count - 1);
+}
+async function listPendingReminders(guildId, userId) {
+  if (pool) {
+    const result = await dbQuery('SELECT id,text,channel_id,execute_at FROM reminders WHERE guild_id=$1 AND user_id=$2 AND done=FALSE ORDER BY execute_at LIMIT 10', [guildId, userId]);
+    return result.rows;
+  }
+  return memory.reminders.filter(row => row.guild_id === guildId && row.user_id === userId && !row.done)
+    .sort((a,b) => a.execute_at - b.execute_at).slice(0, 10);
+}
+async function cancelPendingReminder(guildId, userId, reminderId) {
+  if (pool) {
+    const result = await dbQuery('UPDATE reminders SET done=TRUE WHERE guild_id=$1 AND user_id=$2 AND id=$3 AND done=FALSE RETURNING id', [guildId, userId, reminderId]);
+    return Boolean(result.rowCount);
+  }
+  const index = memory.reminders.findIndex(row => row.guild_id === guildId && row.user_id === userId && Number(row.id) === Number(reminderId) && !row.done);
+  if (index < 0) return false;
+  const [row] = memory.reminders.splice(index, 1);
+  const timer = memoryReminderTimers.get(Number(reminderId));
+  if (timer) clearTimeout(timer);
+  memoryReminderTimers.delete(Number(reminderId));
+  releaseMemoryReminder(row.guild_id, row.user_id);
+  return true;
 }
 
 async function reminderTick() {
@@ -978,7 +1007,9 @@ const commands = [
   new SlashCommandBuilder().setName('8ball').setDescription('Hỏi quả cầu tiên tri.').addStringOption(o => o.setName('question').setDescription('Câu hỏi').setRequired(true)),
   new SlashCommandBuilder().setName('roll').setDescription('Tung xúc xắc.').addIntegerOption(o => o.setName('sides').setDescription('Số mặt (2–1000)').setMinValue(2).setMaxValue(1000).setRequired(false)),
   new SlashCommandBuilder().setName('coinflip').setDescription('Tung đồng xu.'),
-  new SlashCommandBuilder().setName('remind').setDescription('Đặt lời nhắc theo giây.').addIntegerOption(o => o.setName('seconds').setDescription('Số giây').setMinValue(5).setMaxValue(604800).setRequired(true)).addStringOption(o => o.setName('text').setDescription('Nội dung').setRequired(true)),
+  new SlashCommandBuilder().setName('remind').setDescription('Đặt lời nhắc (30m, 2h, 1d).').addStringOption(o => o.setName('duration').setDescription('Thời lượng: 30m, 2h, 1d (5 giây đến 7 ngày)').setMaxLength(12).setRequired(true)).addStringOption(o => o.setName('text').setDescription('Nội dung').setMaxLength(1000).setRequired(true)),
+  new SlashCommandBuilder().setName('reminders').setDescription('Xem lời nhắc đang chờ của bạn.'),
+  new SlashCommandBuilder().setName('reminder-cancel').setDescription('Huỷ một lời nhắc của bạn.').addIntegerOption(o => o.setName('reminder_id').setDescription('ID lời nhắc').setMinValue(1).setRequired(true)),
   new SlashCommandBuilder().setName('afk').setDescription('Bật AFK + ảnh/GIF tuỳ chọn.').addStringOption(o => o.setName('reason').setDescription('Lý do').setMaxLength(1000).setRequired(false)).addStringOption(o => o.setName('image_url').setDescription('URL ảnh/GIF (https://...)').setMaxLength(2048).setRequired(false)).addAttachmentOption(o => o.setName('media').setDescription('Upload ảnh/GIF trực tiếp').setRequired(false)),
   new SlashCommandBuilder().setName('warn').setDescription('Cảnh cáo thành viên.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Lý do').setRequired(true)),
   new SlashCommandBuilder().setName('warnings').setDescription('Xem cảnh cáo.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()).addUserOption(o => o.setName('user').setDescription('Thành viên').setRequired(true)),
@@ -1013,7 +1044,7 @@ const commands = [
 
 const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
-  ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Nhắc việc'],
+  ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Đặt lời nhắc 30m / 2h / 1d'], ['reminders', 'Lời nhắc đang chờ'], ['reminder-cancel', 'Huỷ lời nhắc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
   ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
@@ -1515,15 +1546,34 @@ async function runCommand(name, ctx) {
     case 'coinflip':
       return reply(`🪙 **${Math.random() < 0.5 ? 'Heads' : 'Tails'}**`);
     case 'remind': {
-      const seconds = Number(args.seconds);
-      if (!Number.isInteger(seconds) || seconds < 5 || seconds > 604800) throw new Error('seconds phải từ 5 đến 604800.');
+      const seconds = parseDuration(args.duration ?? args.seconds);
       const executeAt = Date.now() + seconds * 1000;
-      await scheduleReminder(guild.id, userId, channel.id, String(args.text), executeAt);
-      if (!pool) setTimeout(() => {
-        channel.send({ content: `<@${userId}> ⏰ **Nhắc bạn:** ${args.text}`, allowedMentions: { parse: [], users: [userId] } })
-          .catch(() => {}).finally(() => releaseMemoryReminder(guild.id, userId));
-      }, seconds * 1000);
-      return reply(`⏰ Đã đặt nhắc trong **${seconds}s**.`);
+      const reminderId = await scheduleReminder(guild.id, userId, channel.id, String(args.text || '').slice(0, 1000), executeAt);
+      if (!pool) {
+        const timer = setTimeout(() => {
+          channel.send({ content: `<@${userId}> ⏰ **Nhắc bạn:** ${String(args.text || '').slice(0, 1000)}`, allowedMentions: { parse: [], users: [userId] } })
+            .catch(() => {}).finally(() => {
+              memoryReminderTimers.delete(reminderId);
+              memory.reminders = memory.reminders.filter(row => Number(row.id) !== Number(reminderId));
+              releaseMemoryReminder(guild.id, userId);
+            });
+        }, seconds * 1000);
+        memoryReminderTimers.set(reminderId, timer);
+      }
+      return reply(`⏰ Đã đặt lời nhắc #${reminderId} sau **${args.duration ?? seconds + 's'}**.`);
+    }
+    case 'reminders': {
+      const rows = await listPendingReminders(guild.id, userId);
+      if (!rows.length) return reply('Bạn không có lời nhắc nào đang chờ.');
+      const body = rows.map(row => '#' + row.id + ' · <t:' + Math.floor(Number(row.execute_at) / 1000) + ':R> · ' + String(row.text || '').slice(0, 150)).join('\\n');
+      return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle('⏰ Lời nhắc của bạn').setDescription(body).setFooter({ text: 'Huỷ bằng /reminder-cancel reminder_id' }).setTimestamp());
+    }
+    case 'reminder-cancel': {
+      const id = Number(args.reminderId);
+      if (!Number.isSafeInteger(id) || id < 1) throw new Error('Reminder ID không hợp lệ.');
+      const cancelled = await cancelPendingReminder(guild.id, userId, id);
+      if (!cancelled) throw new Error('Không tìm thấy lời nhắc đang chờ của bạn.');
+      return reply('✅ Đã huỷ lời nhắc #' + id + '.');
     }
     case 'afk': {
       const media = args.media_url || args.image_url || null;
@@ -1802,7 +1852,8 @@ function extractInteractionArgs(interaction) {
   if (interaction.commandName === 'leaderboard') out.kind = interaction.options.getString('type') || 'levels';
   if (interaction.commandName === '8ball') out.question = interaction.options.getString('question');
   if (interaction.commandName === 'roll') out.sides = interaction.options.getInteger('sides');
-  if (interaction.commandName === 'remind') { out.seconds = interaction.options.getInteger('seconds'); out.text = interaction.options.getString('text'); }
+  if (interaction.commandName === 'remind') { out.duration = interaction.options.getString('duration'); out.text = interaction.options.getString('text'); }
+  if (interaction.commandName === 'reminder-cancel') out.reminderId = interaction.options.getInteger('reminder_id');
   if (interaction.commandName === 'afk') { out.reason = interaction.options.getString('reason') || undefined; out.media_url = interaction.options.getAttachment('media')?.url || interaction.options.getString('image_url') || undefined; }
   if (interaction.commandName === 'clear' || interaction.commandName === 'slowmode') out[interaction.commandName === 'clear' ? 'amount' : 'seconds'] = interaction.options.getInteger(interaction.commandName === 'clear' ? 'amount' : 'seconds');
   if (interaction.commandName === 'role') { out.mode = interaction.options.getString('mode'); out.user = getUserId(); out.role = interaction.options.getRole('role')?.id; }
@@ -2003,9 +2054,10 @@ bot.on('messageCreate', async message => {
     if (!name || !commands.some(c => c.name === name)) return;
     const basicMap = {
       ping: {}, help: {}, server: {}, botinfo: {}, coinflip: {},
-      '8ball': { question: parts.join(' ') }, roll: { sides: Number(parts[0]) || 6 }, remind: { seconds: Number(parts[0]), text: parts.slice(1).join(' ') },
+      '8ball': { question: parts.join(' ') }, roll: { sides: Number(parts[0]) || 6 }, remind: { duration: parts[0], text: parts.slice(1).join(' ') },
       announce: { message: parts.join(' ') }, clear: { amount: Number(parts[0]) }, slowmode: { seconds: Number(parts[0]) }, lock: {}, unlock: {},
       rank: {}, balance: {}, daily: {}, work: {}, leaderboard: { kind: parts[0] === 'coins' ? 'coins' : 'levels' },
+      reminders: {}, 'reminder-cancel': { reminderId: Number(parts[0]) },
       'vc-leave': {}
     };
     if (['rank', 'balance'].includes(name)) {

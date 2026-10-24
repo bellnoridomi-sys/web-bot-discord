@@ -123,3 +123,15 @@ test('temporary ban expiry check handles future, due, and invalid timestamps', a
   assert.equal(isExpiryDue('bad', 1000), false);
   assert.equal(isExpiryDue(0, 1000), false);
 });
+
+import { parseDuration } from '../lib/duration-utils.js';
+test('parses human reminder durations and keeps numeric-second compatibility', () => {
+  assert.equal(parseDuration('30m'), 1800);
+  assert.equal(parseDuration('2h'), 7200);
+  assert.equal(parseDuration('1d'), 86400);
+  assert.equal(parseDuration('5s'), 5);
+  assert.equal(parseDuration(300), 300);
+  assert.throws(() => parseDuration('2w'), /dạng 30m/);
+  assert.throws(() => parseDuration('1s'), /từ 5/);
+  assert.throws(() => parseDuration('8d'), /từ 5/);
+});
