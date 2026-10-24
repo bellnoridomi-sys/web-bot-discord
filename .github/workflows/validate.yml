@@ -80,8 +80,8 @@ jobs:
           assert.ok(server.includes("app.get('/invite'"), 'Missing Add to Discord endpoint');
           for (const page of ['privacy.html','terms.html','leaderboard.html']) assert.ok(fs.existsSync('public/' + page), 'Missing public page: ' + page);
           const leaderboard = fs.readFileSync('public/leaderboard.html','utf8');
-          const embeddedScript = leaderboard.match(/<script>([\\s\\S]*?)<\\/script>/)?.[1] || '';
+          const embeddedScript = leaderboard.split('<script>')[1]?.split('</script>')[0] || '';
           assert.ok(embeddedScript.length > 0, 'Leaderboard page must include its client script');
-          new Function('return (async function(){' + embeddedScript + '\\n})');
+          new Function('return (async function(){' + embeddedScript + String.fromCharCode(10) + '})');
           console.log('Critical bot/dashboard hooks, public pages and +legit formats verified.');
           NODE
