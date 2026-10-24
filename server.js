@@ -1373,6 +1373,7 @@ async function runCommand(name, ctx) {
     case 'legit': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageRoles);
       if (!target) throw new Error('Không tìm thấy thành viên cần xác minh. Dùng +legit @thành_viên.');
+      ensureTargetBelowInvoker(user, target, 'xác minh/gán role Legit');
       if (target.id === guild.ownerId) throw new Error('Owner không cần gắn role Legit.');
       const role = await ensureNamedRole(guild, '✅ Legit', 0x57F287, []);
       const me = guild.members.me || await guild.members.fetchMe();
