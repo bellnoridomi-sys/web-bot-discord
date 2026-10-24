@@ -415,10 +415,24 @@ const MAX_PENDING_REMINDERS_PER_USER = 10;
 function reminderKey(guildId, userId) { return guildId + ':' + userId; }
 async function scheduleReminder(guildId, userId, channelId, text, executeAt) {
   if (pool) {
-    const pending = await dbQuery('SELECT COUNT(*)::int AS count FROM reminders WHERE guild_id=$1 AND user_id=$2 AND done=FALSE', [guildId, userId]);
-    if (Number(pending?.rows?.[0]?.count || 0) >= MAX_PENDING_REMINDERS_PER_USER) throw new Error('Bạn chỉ được có tối đa ' + MAX_PENDING_REMINDERS_PER_USER + ' lời nhắc đang chờ trong server này.');
-    const inserted = await dbQuery('INSERT INTO reminders(guild_id,user_id,channel_id,text,execute_at) VALUES($1,$2,$3,$4,$5) RETURNING id', [guildId, userId, channelId, text, executeAt]);
-    return Number(inserted.rows[0].id);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Serialize quota checks for the same guild/user to prevent concurrent commands exceeding the limit.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [reminderKey(guildId, userId)]);
+      const pending = await client.query('SELECT COUNT(*)::int AS count FROM reminders WHERE guild_id=$1 AND user_id=$2 AND done=FALSE', [guildId, userId]);
+      if (Number(pending?.rows?.[0]?.count || 0) >= MAX_PENDING_REMINDERS_PER_USER) {
+        throw new Error('Bạn chỉ được có tối đa ' + MAX_PENDING_REMINDERS_PER_USER + ' lời nhắc đang chờ trong server này.');
+      }
+      const inserted = await client.query('INSERT INTO reminders(guild_id,user_id,channel_id,text,execute_at) VALUES($1,$2,$3,$4,$5) RETURNING id', [guildId, userId, channelId, String(text || '').slice(0, 1000), executeAt]);
+      await client.query('COMMIT');
+      return Number(inserted.rows[0].id);
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   }
   const key = reminderKey(guildId, userId), count = memoryReminderCounts.get(key) || 0;
   if (count >= MAX_PENDING_REMINDERS_PER_USER) throw new Error('Bạn chỉ được có tối đa ' + MAX_PENDING_REMINDERS_PER_USER + ' lời nhắc đang chờ trong server này.');
@@ -1973,7 +1987,7 @@ bot.on('interactionCreate', async interaction => {
     }
   }
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
-  const ephemeralCommands = new Set(['warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
+  const ephemeralCommands = new Set(['remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
   try {
     // Acknowledge all slash commands before doing network/database work.
     await interaction.deferReply({ ephemeral: ephemeralCommands.has(interaction.commandName) });
