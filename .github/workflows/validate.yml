@@ -76,5 +76,12 @@ jobs:
             assert.ok(match, `+legit syntax should parse: ${input}`);
             assert.equal(match[1] || match[2] || null, expected, `Wrong +legit target for: ${input}`);
           }
-          console.log('Critical bot/dashboard hooks and +legit formats verified.');
+          assert.ok(server.includes("app.get('/api/public/guilds/:guildId/leaderboard'"), 'Missing public leaderboard endpoint');
+          assert.ok(server.includes("app.get('/invite'"), 'Missing Add to Discord endpoint');
+          for (const page of ['privacy.html','terms.html','leaderboard.html']) assert.ok(fs.existsSync('public/' + page), 'Missing public page: ' + page);
+          const leaderboard = fs.readFileSync('public/leaderboard.html','utf8');
+          const embeddedScript = leaderboard.match(/<script>([\\s\\S]*?)<\\/script>/)?.[1] || '';
+          assert.ok(embeddedScript.length > 0, 'Leaderboard page must include its client script');
+          new Function('return (async function(){' + embeddedScript + '\\n})');
+          console.log('Critical bot/dashboard hooks, public pages and +legit formats verified.');
           NODE

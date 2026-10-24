@@ -2076,6 +2076,41 @@ bot.on('voiceStateUpdate', async (oldState, newState) => {
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'aki-discord-control', persistence: pool ? 'postgres' : 'memory', time: new Date().toISOString(), bot: bot.isReady(), sessionPersistence: Boolean(pool) }));
 app.get('/health', (_req, res) => res.status(200).send('OK'));
 
+app.get('/invite', (_req, res) => {
+  const clientId = process.env.DISCORD_CLIENT_ID;
+  if (!clientId) return res.status(503).send('Discord invite is not configured: set DISCORD_CLIENT_ID.');
+  const url = new URL('https://discord.com/oauth2/authorize');
+  url.searchParams.set('client_id', clientId);
+  url.searchParams.set('permissions', '1099783334998');
+  url.searchParams.set('scope', 'bot applications.commands');
+  return res.redirect(url.toString());
+});
+
+app.get('/api/public/stats', (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=30');
+  res.json({ botReady: bot.isReady(), guilds: bot.guilds.cache.size, commands: commands.length });
+});
+
+app.get('/api/public/guilds/:guildId/leaderboard', async (req, res) => {
+  const guildId = String(req.params.guildId || '');
+  if (!/^[0-9]{17,20}$/.test(guildId)) return res.status(400).json({ error: 'INVALID_GUILD_ID' });
+  const guild = bot.guilds.cache.get(guildId);
+  if (!guild) return res.status(404).json({ error: 'PUBLIC_LEADERBOARD_NOT_AVAILABLE' });
+  const kind = req.query.type === 'coins' ? 'coins' : 'levels';
+  try {
+    const rows = await getCommunityLeaderboard(guildId, kind, 10);
+    res.set('Cache-Control', 'public, max-age=30');
+    return res.json({
+      guild: { id: guild.id, name: guild.name, icon: guild.iconURL({ size: 128 }) },
+      type: kind,
+      rows: rows.map(row => ({ rank: row.rank, userId: row.user_id, level: Number(row.level) || 0, xp: Number(row.xp) || 0, coins: Number(row.coins) || 0 }))
+    });
+  } catch (error) {
+    console.error('Public leaderboard failed:', error.message);
+    return res.status(500).json({ error: 'LEADERBOARD_UNAVAILABLE' });
+  }
+});
+
 app.get('/api/me', async (req, res) => {
   const s = getSession(req);
   if (!s) return res.json({ authenticated: false });
@@ -2523,6 +2558,12 @@ const INDEX_FILE = path.join(PUBLIC_DIR, 'index.html');
 
 // Only the deliberately published public/ directory is served to browsers.
 app.use(express.static(PUBLIC_DIR, { extensions: ['html'] }));
+app.get('/privacy', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'privacy.html')));
+app.get('/terms', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'terms.html')));
+app.get('/leaderboard/:guildId', (req, res) => {
+  if (!/^[0-9]{17,20}$/.test(String(req.params.guildId || ''))) return res.status(400).type('text/plain').send('Invalid Discord server ID.');
+  return res.sendFile(path.join(PUBLIC_DIR, 'leaderboard.html'));
+});
 app.get('/{*splat}', (req, res) => {
   const requested = String(req.path || '');
   if (/\.(?:css|js|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|mp3|wav|mp4)$/i.test(requested)) {
