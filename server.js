@@ -1670,7 +1670,7 @@ bot.on('messageCreate', async message => {
     try {
       const match = message.content.trim().match(/^\+legit(?:\s+\+?\s*(?:<@!?(\d{17,20})>|@?(\d{17,20})))?\s*$/i);
       if (!match) {
-        await message.reply('Dùng `+legit` hoặc `+legit + @1393847310949290026`.').catch(() => {});
+        await message.reply('Dùng `+legit` hoặc `+legit + @<ID_đã_cấu_hình>`.').catch(() => {});
         return;
       }
       const targetId = match[1] || match[2] || null;
