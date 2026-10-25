@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan } from '../lib/role-utils.js';
+import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan, canManageTarget, canAssignRole } from '../lib/role-utils.js';
 import { isAllowedOrigin } from '../lib/security-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from '../lib/ticket-utils.js';
 import { normalizeMediaUrl } from '../lib/media-utils.js';
@@ -251,4 +251,24 @@ test('mass mention detection catches everyone and excessive mention counts', () 
 test('raid join burst triggers only after configured threshold within time window', () => {
   assert.equal(isRaidJoinBurst([0,1000,2000,3000],4000,10000,5), true);
   assert.equal(isRaidJoinBurst([1000,2000,3000],4000,1000,5), false);
+});
+
+test('target hierarchy policy rejects self/equal/higher targets and exempts guild owner', () => {
+  const role = position => ({ position, comparePositionTo(other) { return Math.sign(this.position - other.position); } });
+  const ownerRole = role(1), staffRole = role(5), equalRole = role(5), juniorRole = role(2), adminRole = role(8);
+  assert.equal(canManageTarget('owner', ownerRole, 'target', adminRole, 'owner'), true);
+  assert.equal(canManageTarget('staff', staffRole, 'junior', juniorRole, 'owner'), true);
+  assert.equal(canManageTarget('staff', staffRole, 'equal', equalRole, 'owner'), false);
+  assert.equal(canManageTarget('staff', staffRole, 'admin', adminRole, 'owner'), false);
+  assert.equal(canManageTarget('staff', staffRole, 'staff', staffRole, 'owner'), false);
+  assert.equal(canManageTarget('staff', staffRole, 'owner', ownerRole, 'owner'), false);
+});
+test('role assignment policy rejects managed/everyone roles and checks position', () => {
+  const high = { position: 5, comparePositionTo(other) { return Math.sign(this.position - other.position); } };
+  const low = { id: '2', managed: false, position: 2, comparePositionTo(other) { return Math.sign(this.position - other.position); } };
+  assert.equal(canAssignRole('owner', high, { ...low, position: 99 }, 'owner', '1'), true);
+  assert.equal(canAssignRole('staff', high, low, 'owner', '1'), true);
+  assert.equal(canAssignRole('staff', high, { ...low, position: 5 }, 'owner', '1'), false);
+  assert.equal(canAssignRole('staff', high, { ...low, managed: true }, 'owner', '1'), false);
+  assert.equal(canAssignRole('staff', high, low, 'owner', '2'), false);
 });

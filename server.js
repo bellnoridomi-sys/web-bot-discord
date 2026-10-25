@@ -7,7 +7,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
-import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan } from './lib/role-utils.js';
+import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan, canManageTarget, canAssignRole } from './lib/role-utils.js';
 import { isAllowedOrigin } from './lib/security-utils.js';
 import { normalizeMediaUrl } from './lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
@@ -1236,12 +1236,16 @@ function ensureTargetBelowInvoker(actor, target, action = 'thao tác này') {
   if (actor.id === guild.ownerId) return;
   if (target.id === guild.ownerId) throw new Error('Không thể thực hiện thao tác với chủ server.');
   if (target.id === actor.id) throw new Error('Bạn không thể dùng lệnh này lên chính mình.');
-  if (!isRoleHigherThan(actor.roles.highest, target.roles.highest)) throw new Error(`Role cao nhất của mục tiêu phải thấp hơn role cao nhất của bạn để ${action}.`);
+  if (!canManageTarget(actor.id, actor.roles.highest, target.id, target.roles.highest, guild.ownerId)) {
+    throw new Error(`Role cao nhất của mục tiêu phải thấp hơn role cao nhất của bạn để ${action}.`);
+  }
 }
 function ensureRoleBelowInvoker(actor, role) {
   if (!actor || !role) throw new Error('Không xác định được người thực hiện hoặc role.');
   if (role.managed || role.id === actor.guild.id) throw new Error('Không thể tự gán/gỡ role @everyone hoặc role do tích hợp quản lý.');
-  if (actor.id !== actor.guild.ownerId && !isRoleHigherThan(actor.roles.highest, role)) throw new Error('Role cần gán/gỡ phải thấp hơn role cao nhất của bạn.');
+  if (!canAssignRole(actor.id, actor.roles.highest, role, actor.guild.ownerId, actor.guild.id)) {
+    throw new Error('Role cần gán/gỡ phải thấp hơn role cao nhất của bạn.');
+  }
 }
 
 async function joinGuildVoice(guild, channelId, source = 'manual') {

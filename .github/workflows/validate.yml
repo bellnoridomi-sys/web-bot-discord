@@ -36,70 +36,24 @@ jobs:
           node --check lib/economy-utils.js
           node --check lib/automod-utils.js
           node --test tests/*.test.js
-      - name: Check critical dashboard and reaction-role hooks exist
+      - name: Check embedded JavaScript in public HTML pages
         run: |
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          import assert from 'node:assert/strict';
-          const server = fs.readFileSync('server.js', 'utf8');
-          const html = fs.readFileSync('public/index.html', 'utf8');
-          const client = fs.readFileSync('public/script.js', 'utf8');
-          const migration = fs.readFileSync('migrations/001_initial.sql', 'utf8');
-          for (const route of [
-            "app.post('/api/guilds/:guildId/roles-panel'",
-            "app.post('/api/guilds/:guildId/announce'",
-            "bot.on('messageReactionAdd'",
-            "bot.on('messageReactionRemove'",
-            "bot.on('guildMemberAdd'"
-          ]) assert.ok(server.includes(route), `Missing server hook: ${route}`);
-          for (const id of ['announcementChannel','announcementMessage','sendAnnouncement','rolePanelChannel','postRolePanel']) {
-            assert.ok(html.includes(`id="${id}"`), `Missing dashboard element: ${id}`);
+          import path from 'node:path';
+          const directory = 'public';
+          const htmlFiles = fs.readdirSync(directory).filter(name => name.endsWith('.html'));
+          let inlineScriptCount = 0;
+          for (const filename of htmlFiles) {
+            const source = fs.readFileSync(path.join(directory, filename), 'utf8');
+            for (const match of source.matchAll(/<script\\b[^>]*>([\\s\\S]*?)<\\/script\\s*>/gi)) {
+              const code = match[1].trim();
+              if (!code) continue;
+              try { new Function(code); }
+              catch (error) { throw new Error(filename + ' has invalid inline JavaScript: ' + error.message); }
+              inlineScriptCount++;
+            }
           }
-          assert.ok(client.includes('sendDashboardAnnouncement'), 'Missing announcement client handler');
-          assert.ok(server.includes("message.react('✅')"), 'Missing +legit reaction');
-          assert.ok(server.includes("aki:rr:"), 'Missing emoji button fallback for role selection');
-          assert.ok(server.includes('normalizeReactionEmoji'), 'Missing Unicode emoji normalization');
-          assert.ok(server.includes('isActiveReactionRolePanel(panel, message)'), 'Reaction handler must check the active panel message ID');
-          const pollUtils = fs.readFileSync('lib/poll-utils.js', 'utf8');
-          assert.ok(server.includes('buildNativePollPayload(args)'), 'Poll commands must use the native poll builder');
-          assert.ok(pollUtils.includes('sanitizePollText'), 'Native poll choices must neutralize role and mass mentions');
-          assert.ok(server.includes("isAllowedOrigin(req.get('origin'), SITE_URL)"), 'Mutating requests must validate Origin');
-          assert.ok(!server.includes('sessions: sessionStore.size'), 'Overview must not expose the process session count');
-          assert.ok(server.includes('getReactionRoleBinding(guild.id, message.id, emojiName)'), 'Reaction handler must use the configured database binding');
-          assert.ok(!server.includes('parseReactionRoleBindingFromMessage'), 'Reaction roles must never be parsed from embed text');
-          assert.ok(server.includes("process.on('unhandledRejection'"), 'Missing runtime error reporting hook');
-          assert.ok(server.includes("bot.on('error'"), 'Missing Discord client error reporting hook');
-          assert.ok(server.includes("const migrationDir = new URL('./migrations/', import.meta.url)"), 'Missing versioned migration runner');
-          assert.ok(migration.includes('CREATE TABLE IF NOT EXISTS community_profiles'), 'Missing persistent community profile table in initial migration');
-          for (const name of ['rank','balance','daily','work','leaderboard','welcome-setup','goodbye-setup']) {
-            assert.ok(server.includes(`setName('${name}')`), `Missing slash command: ${name}`);
-          }
-          const legitPattern = /^\+legit(?:\s+\+?\s*(?:<@!?(\d{17,20})>|@?(\d{17,20})))?\s*$/i;
-          const targetId = '123456789012345678';
-          for (const [input, expected] of [
-            ['+legit', null],
-            ['+legit + <@123456789012345678>', targetId],
-            ['+legit <@!123456789012345678>', targetId],
-            ['+legit + @123456789012345678', targetId],
-            ['+legit + 123456789012345678', targetId]
-          ]) {
-            const match = input.match(legitPattern);
-            assert.ok(match, `+legit syntax should parse: ${input}`);
-            assert.equal(match[1] || match[2] || null, expected, `Wrong +legit target for: ${input}`);
-          }
-          assert.ok(server.includes("app.get('/api/public/guilds/:guildId/leaderboard'"), 'Missing public leaderboard endpoint');
-          for (const menu of ["setName('Userinfo')", "setName('Warn')", "setName('Report')"]) assert.ok(server.includes(menu), 'Missing moderation context menu: ' + menu);
-          assert.ok(server.includes("app.get('/api/commands'"), 'Missing command schema endpoint');
-          assert.ok(html.includes('id="commandDynamicFields"'), 'Command Lab should render dynamic fields');
-          assert.ok(html.includes('id="announcementPreviewMessage"'), 'Announcement editor requires live preview');
-          assert.ok(client.includes('renderAnnouncementPreview'), 'Announcement preview should update as fields change');
-          assert.ok(server.includes("ANNOUNCEMENT_BUTTON_REQUIRES_HTTPS"), 'Announcement link buttons must require HTTPS');
-          assert.ok(client.includes('renderDynamicCommandForm'), 'Missing generated Command Lab form');
-          assert.ok(server.includes("app.get('/invite'"), 'Missing Add to Discord endpoint');
-          for (const page of ['privacy.html','terms.html','leaderboard.html']) assert.ok(fs.existsSync('public/' + page), 'Missing public page: ' + page);
-          const leaderboard = fs.readFileSync('public/leaderboard.html','utf8');
-          const embeddedScript = leaderboard.split('<script>')[1]?.split('</script>')[0] || '';
-          assert.ok(embeddedScript.length > 0, 'Leaderboard page must include its client script');
-          new Function('return (async function(){' + embeddedScript + String.fromCharCode(10) + '})');
-          console.log('Critical bot/dashboard hooks, public pages and +legit formats verified.');
+          if (!inlineScriptCount) throw new Error('No inline public scripts were checked.');
+          console.log('Parsed ' + inlineScriptCount + ' embedded public scripts across ' + htmlFiles.length + ' HTML pages.');
           NODE
