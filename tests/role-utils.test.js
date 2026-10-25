@@ -135,6 +135,7 @@ import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from '
 import { SHOP_ITEMS, getShopItem, isSafeShopRole } from '../lib/shop-utils.js';
 import { nextDailyStreak, dailyStreakReward, UTC_DAY_MS } from '../lib/economy-utils.js';
 import { normalizeSaleSubmission, canPostSale, normalizeSaleCooldownMinutes } from '../lib/sales-utils.js';
+import { readFileSync } from 'node:fs';
 import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from '../lib/temp-voice-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, isRaidJoinBurst } from '../lib/automod-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
@@ -329,4 +330,19 @@ test('temporary voice names are safe and user limits stay within Discord bounds'
   assert.equal(normalizeVoiceUserLimit(-1), 0);
   assert.equal(normalizeVoiceUserLimit(25), 25);
   assert.equal(normalizeVoiceUserLimit(120), 99);
+});
+
+test('Command Lab maps snake_case options to handler argument names', () => {
+  const source = readFileSync(new URL('../public/script.js', import.meta.url), 'utf8');
+  const match = source.match(/function commandArgKey\(commandName, optionName\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(match, 'Command Lab argument mapper must exist');
+  const commandArgKey = new Function(match[0] + '; return commandArgKey;')();
+  assert.equal(commandArgKey('giveaway', 'required_role'), 'requiredRoleId');
+  assert.equal(commandArgKey('verify-setup', 'member_role'), 'verifyRole');
+  assert.equal(commandArgKey('verify-setup', 'quarantine_role'), 'quarantineRole');
+  assert.equal(commandArgKey('giveaway-reroll', 'giveaway_id'), 'giveawayId');
+  assert.equal(commandArgKey('sell-setup', 'cooldown_minutes'), 'cooldownMinutes');
+  assert.equal(commandArgKey('xp-setup', 'ignored_channels'), 'ignoredChannels');
+  assert.equal(commandArgKey('temp-voice-setup', 'trigger_channel'), 'triggerChannel');
+  assert.equal(commandArgKey('temp-voice-setup', 'user_limit'), 'userLimit');
 });

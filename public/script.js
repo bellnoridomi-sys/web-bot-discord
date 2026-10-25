@@ -67,8 +67,12 @@ function updateAfkPreview(){const reason=$('afkReason')?.value.trim()||'Your rea
 function flash(id,msg,error=false){const el=$(id);if(!el)return;el.textContent=msg;el.dataset.error=error?'1':'0';clearTimeout(el._t);el._t=setTimeout(()=>el.dataset.error='',3500)}
 async function refreshActivity(){if(!state.guild)return;try{const d=await fetchJson('/api/activity');const allowed=state.guild.id;const items=(d.items||[]).filter(x=>!x.guild_id||x.guild_id===allowed);$('activityList').innerHTML=items.length?items.slice(0,20).map(x=>`<div class="activity-item"><b>${escapeHtml(x.action||'event')}</b><small>${escapeHtml(x.details||'')} · ${escapeHtml(new Date(x.created_at).toLocaleString('vi-VN'))}</small></div>`).join(''):'<div class="empty-line">No events yet.</div>'}catch{}}
 function commandArgKey(commandName, optionName){
- const aliases={user_id:'userId',case_id:'caseId',warning_id:'warningId'};
- return aliases[optionName]||optionName;
+ const aliases={
+  user_id:'userId',case_id:'caseId',warning_id:'warningId',giveaway_id:'giveawayId',
+  required_role:'requiredRoleId',member_role:'verifyRole',quarantine_role:'quarantineRole',
+  trigger_channel:'triggerChannel',cooldown_minutes:'cooldownMinutes',user_limit:'userLimit'
+ };
+ return aliases[optionName]||optionName.replace(/_([a-z])/g,(_,letter)=>letter.toUpperCase());
 }
 function renderDynamicCommandForm(){
  const host=$('commandDynamicFields');if(!host)return;
