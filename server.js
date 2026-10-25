@@ -31,7 +31,7 @@ import { keepsCommandResultPrivate, summarizeCommandResult } from './lib/command
 import { normalizeMessageTemplate, renderMessageTemplate } from './lib/message-template-utils.js';
 import { checkCommandCooldown, normalizeAutocompleteChoices, formatReminderList } from './lib/ux-utils.js';
 import { getCommandRegistrationScopes } from './lib/command-registration-utils.js';
-import { safeRuntimeErrorCode } from './lib/runtime-diagnostics-utils.js';
+import { safeRuntimeErrorCode, classifyGatewayDebugMessage } from './lib/runtime-diagnostics-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -154,7 +154,14 @@ const runtimeDiagnostics = {
     state: process.env.DISCORD_TOKEN ? 'connecting' : 'token_missing',
     lastErrorCode: null,
     lastGatewayCloseCode: null,
-    lastEventAt: null
+    gatewayStage: 'not_started',
+    lastEventAt: null,
+    restAuth: {
+      state: process.env.DISCORD_TOKEN ? 'not_checked' : 'token_missing',
+      httpStatus: null,
+      errorCode: null,
+      lastCheckedAt: null
+    }
   },
   commands: {
     global: { state: process.env.DISCORD_TOKEN ? 'waiting_for_gateway' : 'not_started', errorCode: null, lastAttemptAt: null, lastSuccessAt: null },
@@ -163,6 +170,35 @@ const runtimeDiagnostics = {
     total: 0
   }
 };
+
+
+async function probeDiscordBotToken() {
+  const check = runtimeDiagnostics.discord.restAuth;
+  const rawToken = String(process.env.DISCORD_TOKEN || '').trim();
+  if (!rawToken) {
+    check.state = 'token_missing';
+    check.lastCheckedAt = new Date().toISOString();
+    return;
+  }
+  check.state = 'checking';
+  try {
+    const token = rawToken.replace(/^Bot\s+/i, '');
+    const response = await fetch('https://discord.com/api/v10/users/@me', {
+      headers: { Authorization: 'Bot ' + token },
+      signal: AbortSignal.timeout(8000)
+    });
+    check.httpStatus = response.status;
+    check.state = response.ok ? 'ok' : response.status === 401 ? 'rejected' : 'http_error';
+    check.errorCode = response.ok ? null : 'HTTP_' + response.status;
+    await response.body?.cancel().catch(() => {});
+  } catch (error) {
+    check.state = 'network_error';
+    check.errorCode = safeRuntimeErrorCode(error);
+    check.httpStatus = null;
+  }
+  check.lastCheckedAt = new Date().toISOString();
+  console.log('[discord-rest-auth-check]', check.state, check.httpStatus ?? check.errorCode ?? 'no_detail');
+}
 
 const databaseHost = (() => { try { return new URL(process.env.DATABASE_URL || '').hostname; } catch { return ''; } })();
 const databaseSsl = resolveDatabaseSsl({
@@ -3425,16 +3461,43 @@ function extractInteractionArgs(interaction) {
 
 bot.on('error', error => {
   runtimeDiagnostics.discord.lastErrorCode = safeRuntimeErrorCode(error);
+  runtimeDiagnostics.discord.gatewayStage = 'client_error';
   runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
   void reportRuntimeError(error, 'discord-client');
 });
+bot.on('shardConnecting', shardId => {
+  runtimeDiagnostics.discord.state = 'connecting';
+  runtimeDiagnostics.discord.gatewayStage = 'opening_socket';
+  runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+  console.log('[discord-gateway] shard connecting', { shardId, nodeVersion: process.version });
+});
+bot.on('shardPreReady', shardId => {
+  runtimeDiagnostics.discord.gatewayStage = 'loading_guilds';
+  runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+  console.log('[discord-gateway] shard pre-ready', { shardId });
+});
+bot.on('shardReady', shardId => {
+  runtimeDiagnostics.discord.state = 'ready';
+  runtimeDiagnostics.discord.gatewayStage = 'ready';
+  runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+  console.log('[discord-gateway] shard ready', { shardId });
+});
+bot.on('debug', message => {
+  const stage = classifyGatewayDebugMessage(message);
+  if (!stage) return;
+  runtimeDiagnostics.discord.gatewayStage = stage;
+  runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+  console.log('[discord-gateway-debug]', stage);
+});
 bot.on('shardError', error => {
   runtimeDiagnostics.discord.lastErrorCode = safeRuntimeErrorCode(error);
+  runtimeDiagnostics.discord.gatewayStage = 'socket_error';
   runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
   void reportRuntimeError(error, 'discord-shard');
 });
 bot.on('shardDisconnect', (event, shardId) => {
   runtimeDiagnostics.discord.state = 'disconnected';
+  runtimeDiagnostics.discord.gatewayStage = 'disconnected';
   runtimeDiagnostics.discord.lastGatewayCloseCode = Number.isInteger(event?.code) ? event.code : null;
   runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
   console.warn('[discord-gateway] shard disconnected', {
@@ -3444,16 +3507,19 @@ bot.on('shardDisconnect', (event, shardId) => {
 });
 bot.on('shardReconnecting', shardId => {
   runtimeDiagnostics.discord.state = 'reconnecting';
+  runtimeDiagnostics.discord.gatewayStage = 'reconnecting';
   runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
   console.warn('[discord-gateway] shard reconnecting', { shardId });
 });
 bot.on('shardResume', (_replayedEvents, shardId) => {
   runtimeDiagnostics.discord.state = bot.isReady() ? 'ready' : 'connecting';
+  runtimeDiagnostics.discord.gatewayStage = 'resumed';
   runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
   console.log('[discord-gateway] shard resumed', { shardId });
 });
 bot.on('invalidated', () => {
   runtimeDiagnostics.discord.state = 'invalidated';
+  runtimeDiagnostics.discord.gatewayStage = 'invalidated';
   runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
   console.error('[discord-gateway] client session invalidated');
 });
@@ -3468,6 +3534,7 @@ bot.on('ready', async () => {
   runtimeDiagnostics.discord.state = 'ready';
   runtimeDiagnostics.discord.lastErrorCode = null;
   runtimeDiagnostics.discord.lastGatewayCloseCode = null;
+  runtimeDiagnostics.discord.gatewayStage = 'ready';
   runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
   runtimeDiagnostics.commands.total = commands.length;
   console.log(`Logged in as ${bot.user.tag}`);
@@ -4165,11 +4232,15 @@ app.get('/api/health', async (_req, res) => {
       ready: bot.isReady(),
       state: runtimeDiagnostics.discord.state,
       tokenConfigured: Boolean(process.env.DISCORD_TOKEN),
+      restAuth: runtimeDiagnostics.discord.restAuth,
+      gatewayStage: runtimeDiagnostics.discord.gatewayStage,
+      gatewayShards: [...bot.ws.shards.values()].map(shard => ({ id: shard.id, status: String(shard.status) })),
       guilds: bot.guilds.cache.size,
       ping: bot.isReady() ? Math.round(bot.ws.ping) : null,
       lastErrorCode: runtimeDiagnostics.discord.lastErrorCode,
       lastGatewayCloseCode: runtimeDiagnostics.discord.lastGatewayCloseCode,
-      lastEventAt: runtimeDiagnostics.discord.lastEventAt
+      lastEventAt: runtimeDiagnostics.discord.lastEventAt,
+      nodeVersion: process.version
     },
     commands: {
       defined: commandCount,
@@ -4884,12 +4955,15 @@ async function boot() {
     runtimeDiagnostics.discord.state = 'connecting';
     bot.login(process.env.DISCORD_TOKEN).catch(error => {
       runtimeDiagnostics.discord.state = 'login_failed';
+      runtimeDiagnostics.discord.gatewayStage = 'login_failed';
       runtimeDiagnostics.discord.lastErrorCode = safeRuntimeErrorCode(error);
       runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
       console.error('Discord login failed:', runtimeDiagnostics.discord.lastErrorCode);
     });
+    void probeDiscordBotToken();
   } else {
     runtimeDiagnostics.discord.state = 'token_missing';
+    runtimeDiagnostics.discord.gatewayStage = 'token_missing';
     console.warn('DISCORD_TOKEN missing. Web server is running, bot is disabled.');
   }
 }

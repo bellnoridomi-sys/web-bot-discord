@@ -15,7 +15,9 @@ The dashboard also supports a configurable channel for a reaction-role panel (Me
  
 ## Runtime diagnostics
 
-Open `/api/health` to inspect safe runtime state without exposing tokens or secrets. Check `bot.ready`/`bot.state`, `bot.lastGatewayCloseCode`, `commands.global.state`/`commands.global.errorCode`, and `database.check`. A `token_missing`, `login_failed`, or Gateway close code indicates the Discord client itself is offline; `commands.global.state: failed` explains why slash commands may not appear. The `/health` endpoint remains the simple Render availability check.
+Render's Node.js version selection prefers the `NODE_VERSION` environment variable, then `.node-version`, then `.nvmrc`, then the `package.json` engines range. Keep an upper bound in `engines.node`; an unbounded range such as `>=22.12.0` allows Render to select a later major than the CI-tested runtime. The repo's CI uses Node 22, and production is constrained to Node 22.x for consistency. See https://render.com/docs/node-version.
+
+Open `/api/health` to inspect safe runtime state without exposing tokens or secrets. Check `bot.ready`/`bot.state`, `bot.restAuth.state`/`httpStatus`, `bot.gatewayStage`, `bot.lastGatewayCloseCode`, `commands.global.state`/`commands.global.errorCode`, and `database.check`. A `restAuth.state` of `rejected` means Discord rejected the configured bot token; `restAuth.state: ok` with a stuck Gateway stage means the REST token works but the persistent Gateway connection needs further investigation. `commands.global.state: waiting_for_gateway` means registration has not begun because the bot has not reached Ready. The `/health` endpoint remains the simple Render availability check.
 
 ## Role and runtime troubleshooting
 
