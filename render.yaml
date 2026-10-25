@@ -2,9 +2,9 @@ services:
   - type: web
     name: aki-discord-control
     runtime: node
-    plan: free
+    plan: starter
     region: singapore
-    buildCommand: if [ ! -f package-lock.json ]; then npm install --package-lock-only --ignore-scripts --no-audit --no-fund; fi && npm ci --no-audit --no-fund
+    buildCommand: npm ci --no-audit --no-fund
     startCommand: npm start
     healthCheckPath: /health
     envVars:

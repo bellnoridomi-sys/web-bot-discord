@@ -6,6 +6,7 @@ import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETEN
 import { normalizeMediaUrl } from '../lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from '../lib/community-utils.js';
 import { normalizeIdList, normalizeRoleMultipliers, normalizeLevelRewards, shouldAwardXpMessage, applyRoleXpMultiplier, getEligibleLevelRewards } from '../lib/xp-utils.js';
+import { isMigrationFilename } from '../lib/migration-utils.js';
 
 const panel = { channel_id: '222222222222222222', message_id: '333333333333333333' };
 const activeMessage = { channelId: panel.channel_id, id: panel.message_id };
@@ -289,4 +290,14 @@ test('XP policy skips configured channels/roles and uses the highest matching mu
   assert.equal(shouldAwardXpMessage({ enabled: true, channelId: 'c', memberRoleIds: ['a'] }), true);
   assert.equal(applyRoleXpMultiplier(10, ['a','b'], { a: 1.5, b: 2 }), 20);
   assert.deepEqual(getEligibleLevelRewards(7, { '5':'12345678901234567','10':'22345678901234567' }), [{ level:5, roleId:'12345678901234567' }]);
+});
+
+test('migration runner recognizes numbered SQL migrations and rejects unrelated filenames', () => {
+  assert.equal(isMigrationFilename('001_initial.sql'), true);
+  assert.equal(isMigrationFilename('009_xp-settings.sql'), true);
+  assert.equal(isMigrationFilename('010_any-name_2.SQL'), true);
+  assert.equal(isMigrationFilename('.gitignore'), false);
+  assert.equal(isMigrationFilename('backup.sql'), false);
+  assert.equal(isMigrationFilename('../001_initial.sql'), false);
+  assert.equal(isMigrationFilename('folder/001_initial.sql'), false);
 });

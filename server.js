@@ -12,6 +12,7 @@ import { isAllowedOrigin } from './lib/security-utils.js';
 import { normalizeMediaUrl } from './lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
 import { normalizeIdList, normalizeRoleMultipliers, normalizeLevelRewards, shouldAwardXpMessage, applyRoleXpMultiplier, getEligibleLevelRewards } from './lib/xp-utils.js';
+import { isMigrationFilename } from './lib/migration-utils.js';
 import { vouchDenialReason, formatAuditReason, shouldEscalateWarnings } from './lib/moderation-utils.js';
 import { parseDuration } from './lib/duration-utils.js';
 import { buildNativePollPayload } from './lib/poll-utils.js';
@@ -143,7 +144,7 @@ async function initDb() {
     );
   `);
   const migrationDir = new URL('./migrations/', import.meta.url);
-  const migrations = fs.readdirSync(migrationDir).filter(name => /^\\d+_[a-z0-9_-]+\\.sql$/i.test(name)).sort();
+  const migrations = fs.readdirSync(migrationDir).filter(isMigrationFilename).sort();
   for (const version of migrations) {
     const existing = await dbQuery('SELECT 1 FROM schema_migrations WHERE version=$1', [version]);
     if (existing?.rowCount) continue;

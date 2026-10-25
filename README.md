@@ -94,3 +94,8 @@ For 24/7 bot + voice, use a plan that does not sleep.
 ### Moderation context menus
 
 Right-click a server member and choose **Userinfo**, **Warn**, or **Report**. Warn requires `Moderate Members`, checks the moderator's role hierarchy, and asks for a reason in a modal. Report records a case and activity log without applying an automatic punishment. Userinfo is ephemeral.
+
+
+### Render plan and deterministic deployments
+
+The Blueprint uses a paid Starter web service so the single process hosting the dashboard and Discord gateway does not sleep, and a paid Basic Postgres database for persistent sessions, XP, moderation, tickets and giveaways. Review the current Render pricing before applying the Blueprint. Builds run `npm ci` against the committed lockfile; do not regenerate the lockfile during deployment.
