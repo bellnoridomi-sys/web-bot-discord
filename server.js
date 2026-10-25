@@ -36,7 +36,9 @@ import {
   TextInputStyle,
   REST,
   Routes,
-  SlashCommandBuilder
+  SlashCommandBuilder,
+  ContextMenuCommandBuilder,
+  ApplicationCommandType
 } from 'discord.js';
 import {
   joinVoiceChannel,
@@ -1028,7 +1030,7 @@ const bot = new Client({
   allowedMentions: { parse: ['users', 'roles'] }
 });
 
-const commands = [
+const slashCommands = [
   new SlashCommandBuilder().setName('ping').setDescription('Kiểm tra độ trễ bot.'),
   new SlashCommandBuilder().setName('help').setDescription('Hiện danh sách tính năng.'),
   new SlashCommandBuilder().setName('server').setDescription('Thông tin máy chủ.'),
@@ -1090,6 +1092,12 @@ const commands = [
     .addRoleOption(o => o.setName('quarantine_role').setDescription('Role cách ly tài khoản quá mới').setRequired(false))
     .addIntegerOption(o => o.setName('min_account_days').setDescription('Tuổi tài khoản tối thiểu (0–365 ngày)').setMinValue(0).setMaxValue(365).setRequired(false))
 ].map(c => c.toJSON());
+const contextMenuCommands = [
+  new ContextMenuCommandBuilder().setName('Userinfo').setType(ApplicationCommandType.User),
+  new ContextMenuCommandBuilder().setName('Warn').setType(ApplicationCommandType.User).setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers.toString()),
+  new ContextMenuCommandBuilder().setName('Report').setType(ApplicationCommandType.User)
+].map(command => command.toJSON());
+const commands = [...slashCommands, ...contextMenuCommands];
 
 const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
@@ -1437,6 +1445,33 @@ async function sendTicketTranscript(channel, ownerId, closedBy) {
 }
 
 async function handleAkiModalSubmit(interaction) {
+  const contextMatch = String(interaction.customId || '').match(/^aki:context:(warn|report):(\d{17,20})$/);
+  if (contextMatch && interaction.guild) {
+    await interaction.deferReply({ ephemeral: true });
+    const action = contextMatch[1];
+    const targetId = contextMatch[2];
+    const details = String(interaction.fields.getTextInputValue('details') || '').trim().slice(0, 1200);
+    if (details.length < 5) {
+      await interaction.editReply({ content: 'Hãy nhập ít nhất 5 ký tự mô tả.' });
+      return true;
+    }
+    if (action === 'warn') {
+      const payload = await runCommand('warn', {
+        guild: interaction.guild, userId: interaction.user.id,
+        userName: interaction.user.globalName || interaction.user.username,
+        channel: interaction.channel, args: { user: targetId, reason: details }, source: 'context-menu'
+      });
+      await interaction.editReply(payload);
+      return true;
+    }
+    const target = await interaction.guild.members.fetch(targetId).catch(() => null);
+    if (!target) throw new Error('Không tìm thấy thành viên mục tiêu trong server.');
+    const audit = formatAuditReason(interaction.user.globalName || interaction.user.username, details);
+    const record = await addModerationCase(interaction.guild.id, targetId, interaction.user.id, 'report', audit);
+    await addActivity(interaction.guild.id, interaction.user.id, 'user:report', 'Báo cáo thành viên ' + targetId + ' · case #' + record.case_id + ' · ' + details).catch(() => {});
+    await interaction.editReply({ content: '📨 Đã gửi báo cáo cho đội ngũ. Case #' + record.case_id + '. Không có hình phạt tự động nào được áp dụng.' });
+    return true;
+  }
   const prefix = 'aki:ticket:submit:';
   if (!interaction.customId?.startsWith(prefix) || !interaction.guild) return false;
   const type = normalizeTicketType(interaction.customId.slice(prefix.length));
@@ -2184,6 +2219,32 @@ bot.on('messageReactionAdd', (reaction, user) => applyReactionRole(reaction, use
 bot.on('messageReactionRemove', (reaction, user) => applyReactionRole(reaction, user, false));
 
 bot.on('interactionCreate', async interaction => {
+  if (interaction.isUserContextMenuCommand() && interaction.guild) {
+    try {
+      if (interaction.commandName === 'Userinfo') {
+        await interaction.deferReply({ ephemeral: true });
+        const payload = await runCommand('userinfo', {
+          guild: interaction.guild, userId: interaction.user.id,
+          userName: interaction.user.globalName || interaction.user.username,
+          channel: interaction.channel, args: { user: interaction.targetUser.id }, source: 'context-menu'
+        });
+        await interaction.editReply(payload);
+      } else if (interaction.commandName === 'Warn') {
+        const modal = new ModalBuilder().setCustomId('aki:context:warn:' + interaction.targetUser.id).setTitle('Cảnh cáo thành viên');
+        modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('details').setLabel('Lý do cảnh cáo').setStyle(TextInputStyle.Paragraph).setMinLength(5).setMaxLength(1000).setRequired(true)));
+        await interaction.showModal(modal);
+      } else if (interaction.commandName === 'Report') {
+        const modal = new ModalBuilder().setCustomId('aki:context:report:' + interaction.targetUser.id).setTitle('Báo cáo thành viên');
+        modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('details').setLabel('Lý do / thông tin liên quan').setStyle(TextInputStyle.Paragraph).setMinLength(5).setMaxLength(1200).setRequired(true)));
+        await interaction.showModal(modal);
+      }
+    } catch (error) {
+      const message = '⚠️ ' + String(error.message || 'Không thể hoàn thành lệnh.');
+      if (interaction.deferred || interaction.replied) await interaction.followUp({ content: message, ephemeral: true }).catch(() => {});
+      else await interaction.reply({ content: message, ephemeral: true }).catch(() => {});
+    }
+    return;
+  }
   if (interaction.isModalSubmit()) {
     try { if (await handleAkiModalSubmit(interaction)) return; }
     catch (error) {
@@ -2392,7 +2453,7 @@ bot.on('voiceStateUpdate', async (oldState, newState) => {
 
 app.get('/api/commands', (_req, res) => {
   res.set('Cache-Control', 'public, max-age=300');
-  res.json({ commands: commands.map(command => ({
+  res.json({ commands: commands.filter(command => !command.type || command.type === ApplicationCommandType.ChatInput).map(command => ({
     name: command.name,
     description: command.description || '',
     options: Array.isArray(command.options) ? command.options : [],

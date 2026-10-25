@@ -89,3 +89,8 @@ For 24/7 bot + voice, use a plan that does not sleep.
 ### Moderation escalation configuration
 
 `WARN_ESCALATION_THRESHOLD` defaults to `3`: every third warning attempts an automatic timeout when the target is moderatable. `WARN_ESCALATION_MINUTES` defaults to `10` and accepts 1–40320 minutes. Set the threshold to `0` to disable automatic escalation. The bot needs Moderate Members permission and its highest role must be above the target.
+
+
+### Moderation context menus
+
+Right-click a server member and choose **Userinfo**, **Warn**, or **Report**. Warn requires `Moderate Members`, checks the moderator's role hierarchy, and asks for a reason in a modal. Report records a case and activity log without applying an automatic punishment. Userinfo is ephemeral.

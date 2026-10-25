@@ -83,6 +83,7 @@ jobs:
             assert.equal(match[1] || match[2] || null, expected, `Wrong +legit target for: ${input}`);
           }
           assert.ok(server.includes("app.get('/api/public/guilds/:guildId/leaderboard'"), 'Missing public leaderboard endpoint');
+          for (const menu of ["setName('Userinfo')", "setName('Warn')", "setName('Report')"]) assert.ok(server.includes(menu), 'Missing moderation context menu: ' + menu);
           assert.ok(server.includes("app.get('/api/commands'"), 'Missing command schema endpoint');
           assert.ok(html.includes('id="commandDynamicFields"'), 'Command Lab should render dynamic fields');
           assert.ok(client.includes('renderDynamicCommandForm'), 'Missing generated Command Lab form');
