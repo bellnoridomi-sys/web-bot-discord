@@ -31,7 +31,7 @@ import { keepsCommandResultPrivate, summarizeCommandResult } from './lib/command
 import { normalizeMessageTemplate, renderMessageTemplate } from './lib/message-template-utils.js';
 import { checkCommandCooldown, normalizeAutocompleteChoices, formatReminderList } from './lib/ux-utils.js';
 import { getCommandRegistrationScopes } from './lib/command-registration-utils.js';
-import { safeRuntimeErrorCode, classifyGatewayDebugMessage } from './lib/runtime-diagnostics-utils.js';
+import { safeRuntimeErrorCode, classifyGatewayDebugMessage, classifyDiscordRestRoute, normalizeRateLimitDiagnostics } from './lib/runtime-diagnostics-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -156,12 +156,9 @@ const runtimeDiagnostics = {
     lastGatewayCloseCode: null,
     gatewayStage: 'not_started',
     lastEventAt: null,
-    restAuth: {
-      state: process.env.DISCORD_TOKEN ? 'not_checked' : 'token_missing',
-      httpStatus: null,
-      errorCode: null,
-      lastCheckedAt: null
-    }
+    lastRestResponse: null,
+    lastRestRateLimit: null,
+    restRateLimitCount: 0,
   },
   commands: {
     global: { state: process.env.DISCORD_TOKEN ? 'waiting_for_gateway' : 'not_started', errorCode: null, lastAttemptAt: null, lastSuccessAt: null },
@@ -171,34 +168,6 @@ const runtimeDiagnostics = {
   }
 };
 
-
-async function probeDiscordBotToken() {
-  const check = runtimeDiagnostics.discord.restAuth;
-  const rawToken = String(process.env.DISCORD_TOKEN || '').trim();
-  if (!rawToken) {
-    check.state = 'token_missing';
-    check.lastCheckedAt = new Date().toISOString();
-    return;
-  }
-  check.state = 'checking';
-  try {
-    const token = rawToken.replace(/^Bot\s+/i, '');
-    const response = await fetch('https://discord.com/api/v10/users/@me', {
-      headers: { Authorization: 'Bot ' + token },
-      signal: AbortSignal.timeout(8000)
-    });
-    check.httpStatus = response.status;
-    check.state = response.ok ? 'ok' : response.status === 401 ? 'rejected' : 'http_error';
-    check.errorCode = response.ok ? null : 'HTTP_' + response.status;
-    await response.body?.cancel().catch(() => {});
-  } catch (error) {
-    check.state = 'network_error';
-    check.errorCode = safeRuntimeErrorCode(error);
-    check.httpStatus = null;
-  }
-  check.lastCheckedAt = new Date().toISOString();
-  console.log('[discord-rest-auth-check]', check.state, check.httpStatus ?? check.errorCode ?? 'no_detail');
-}
 
 const databaseHost = (() => { try { return new URL(process.env.DATABASE_URL || '').hostname; } catch { return ''; } })();
 const databaseSsl = resolveDatabaseSsl({
@@ -3459,6 +3428,43 @@ function extractInteractionArgs(interaction) {
   return out;
 }
 
+
+/* Observe the same REST manager discord.js uses for /gateway/bot. Keep only safe metadata. */
+bot.rest.on('rateLimited', info => {
+  const diagnostic = normalizeRateLimitDiagnostics(info);
+  runtimeDiagnostics.discord.lastRestRateLimit = diagnostic;
+  runtimeDiagnostics.discord.restRateLimitCount += 1;
+  runtimeDiagnostics.discord.lastEventAt = diagnostic.at;
+  if (diagnostic.route === 'gateway_bot') {
+    runtimeDiagnostics.discord.gatewayStage = 'gateway_rest_rate_limited';
+  }
+  console.warn('[discord-rest-rate-limit]', diagnostic);
+});
+bot.rest.on('response', (request, response) => {
+  const status = Number(response?.status);
+  if (!Number.isInteger(status) || status < 400) return;
+  const method = typeof request?.method === 'string' && /^[A-Z]{3,10}$/.test(request.method) ? request.method : 'UNKNOWN';
+  const route = classifyDiscordRestRoute(request?.route || request?.url || request?.path);
+  const timestamp = new Date().toISOString();
+  runtimeDiagnostics.discord.lastRestResponse = { status, method, route, at: timestamp };
+  if (route === 'gateway_bot' && status === 401) {
+    runtimeDiagnostics.discord.state = 'auth_rejected';
+    runtimeDiagnostics.discord.lastErrorCode = 'HTTP_401';
+    runtimeDiagnostics.discord.gatewayStage = 'auth_rejected';
+  } else if (route === 'gateway_bot' && status === 429) {
+    runtimeDiagnostics.discord.gatewayStage = 'gateway_rest_rate_limited';
+  }
+  console.warn('[discord-rest-http-error]', { status, method, route });
+});
+bot.rest.on('invalidRequestWarning', info => {
+  const count = Number(info?.count);
+  const remainingTime = Number(info?.remainingTime);
+  console.warn('[discord-rest-invalid-request-warning]', {
+    count: Number.isFinite(count) ? count : null,
+    remainingTimeMs: Number.isFinite(remainingTime) ? Math.min(Math.max(remainingTime, 0), 86_400_000) : null
+  });
+});
+
 bot.on('error', error => {
   runtimeDiagnostics.discord.lastErrorCode = safeRuntimeErrorCode(error);
   runtimeDiagnostics.discord.gatewayStage = 'client_error';
@@ -4232,8 +4238,10 @@ app.get('/api/health', async (_req, res) => {
       ready: bot.isReady(),
       state: runtimeDiagnostics.discord.state,
       tokenConfigured: Boolean(process.env.DISCORD_TOKEN),
-      restAuth: runtimeDiagnostics.discord.restAuth,
       gatewayStage: runtimeDiagnostics.discord.gatewayStage,
+      lastRestResponse: runtimeDiagnostics.discord.lastRestResponse,
+      lastRestRateLimit: runtimeDiagnostics.discord.lastRestRateLimit,
+      restRateLimitCount: runtimeDiagnostics.discord.restRateLimitCount,
       gatewayShards: [...bot.ws.shards.values()].map(shard => ({ id: shard.id, status: String(shard.status) })),
       guilds: bot.guilds.cache.size,
       ping: bot.isReady() ? Math.round(bot.ws.ping) : null,
@@ -4960,7 +4968,6 @@ async function boot() {
       runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
       console.error('Discord login failed:', runtimeDiagnostics.discord.lastErrorCode);
     });
-    void probeDiscordBotToken();
   } else {
     runtimeDiagnostics.discord.state = 'token_missing';
     runtimeDiagnostics.discord.gatewayStage = 'token_missing';
