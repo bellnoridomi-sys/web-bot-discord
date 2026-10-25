@@ -89,6 +89,10 @@ const oauthStateStore = new Map();
 const activityCache = [];
 const xpCooldowns = new Map();
 const runtimeErrorCooldowns = new Map();
+const automodMessageBuckets = new Map();
+const raidJoinBuckets = new Map();
+const raidLockdowns = new Map();
+const automodWarningCooldowns = new Map();
 const memoryReminderCounts = new Map();
 const memoryReminderTimers = new Map();
 let nextMemoryReminderId = 1;
@@ -1202,7 +1206,7 @@ const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Đặt lời nhắc 30m / 2h / 1d'], ['reminders', 'Lời nhắc đang chờ'], ['reminder-cancel', 'Huỷ lời nhắc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
-  ['verify-setup', 'Cổng xác minh / role cách ly'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['automod-setup', 'Chống spam/mass mention/raid'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
+  ['verify-setup', 'Cổng xác minh / role cách ly'], ['automod-setup', 'Cấu hình AutoMod/raid'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['automod-setup', 'Chống spam/mass mention/raid'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
@@ -2453,6 +2457,34 @@ async function runCommand(name, ctx) {
       await addActivity(guild.id, userId, name, '#' + targetChannel.name);
       return reply((name === 'welcome-setup' ? '👋 Kênh chào mừng' : '👋 Kênh tạm biệt') + ' đã được đặt thành <#' + targetChannel.id + '>.');
     }
+    case 'automod-setup': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      const current = await getConfig(guild.id);
+      const enabled = Boolean(args.enabled);
+      const me = guild.members.me || await guild.members.fetchMe();
+      if (enabled && !me.permissions.has(PermissionFlagsBits.ManageMessages)) {
+        throw new Error('Bot cần quyền Manage Messages để bật AutoMod.');
+      }
+      const domains = args.blockedDomains == null
+        ? normalizeBlockedDomains(current.automod_blocked_domains || [])
+        : normalizeBlockedDomains(args.blockedDomains);
+      const config = await setConfig(guild.id, {
+        automod_enabled: enabled,
+        automod_blocked_domains: domains,
+        automod_spam_threshold: args.spamThreshold == null ? current.automod_spam_threshold : args.spamThreshold,
+        automod_spam_window_seconds: args.spamWindowSeconds == null ? current.automod_spam_window_seconds : args.spamWindowSeconds,
+        automod_max_mentions: args.maxMentions == null ? current.automod_max_mentions : args.maxMentions,
+        automod_raid_join_threshold: args.raidJoinThreshold == null ? current.automod_raid_join_threshold : args.raidJoinThreshold,
+        automod_raid_window_seconds: args.raidWindowSeconds == null ? current.automod_raid_window_seconds : args.raidWindowSeconds,
+        automod_lockdown_seconds: args.lockdownSeconds == null ? current.automod_lockdown_seconds : args.lockdownSeconds
+      });
+      await addActivity(guild.id, userId, enabled ? 'automod:enabled' : 'automod:disabled',
+        'AutoMod ' + (enabled ? 'bật' : 'tắt') + ' · blocked domains=' + domains.length + ' · spam=' + config.automod_spam_threshold + '/' + config.automod_spam_window_seconds + 's.');
+      const raidNote = enabled && !me.permissions.has(PermissionFlagsBits.ManageChannels)
+        ? ' Lưu ý: bot thiếu Manage Channels nên không thể khóa text khi phát hiện raid.'
+        : '';
+      return reply((enabled ? '🛡️ AutoMod đã bật.' : 'AutoMod đã tắt.') + ' Domain đang chặn: ' + (domains.join(', ') || 'chưa cấu hình') + '.' + raidNote);
+    }
     case 'shop': {
       const profile = await ensureCommunityProfile(guild.id, userId);
       const rows = SHOP_ITEMS.map(item => '**' + item.id + '** · ' + item.roleName + ' · **' + item.price + ' xu**\n' + item.description).join('\n\n');
@@ -2648,6 +2680,16 @@ function extractInteractionArgs(interaction) {
   if (interaction.commandName === 'giveaway-reroll') out.giveawayId = interaction.options.getString('giveaway_id');
   if (interaction.commandName === 'suggest') out.text = interaction.options.getString('text');
   if (interaction.commandName === 'suggest-setup') out.channel = interaction.options.getChannel('channel')?.id;
+  if (interaction.commandName === 'automod-setup') {
+    out.enabled = interaction.options.getBoolean('enabled');
+    out.blockedDomains = interaction.options.getString('blocked_domains') ?? undefined;
+    out.spamThreshold = interaction.options.getInteger('spam_threshold') ?? undefined;
+    out.spamWindowSeconds = interaction.options.getInteger('spam_window_seconds') ?? undefined;
+    out.maxMentions = interaction.options.getInteger('max_mentions') ?? undefined;
+    out.raidJoinThreshold = interaction.options.getInteger('raid_join_threshold') ?? undefined;
+    out.raidWindowSeconds = interaction.options.getInteger('raid_window_seconds') ?? undefined;
+    out.lockdownSeconds = interaction.options.getInteger('lockdown_seconds') ?? undefined;
+  }
   if (interaction.commandName === 'verify-setup') {
     out.enabled = interaction.options.getBoolean('enabled');
     out.verifyRole = interaction.options.getRole('member_role')?.id;
@@ -2688,6 +2730,7 @@ bot.on('ready', async () => {
     const cfg = await getConfig(guild.id);
     if (cfg.auto_voice_enabled && cfg.auto_voice_channel_id) joinGuildVoice(guild, cfg.auto_voice_channel_id, 'auto').catch(e => console.error(`Auto voice ${guild.id}:`, e.message));
   }
+  await restorePendingRaidLockdowns().catch(error => reportRuntimeError(error, 'automod-restore-raid-lockdown'));
   for (const guild of bot.guilds.cache.values()) {
     io.to('guild:' + guild.id).emit('bot-status', {
       type: 'ready',
@@ -2811,7 +2854,7 @@ bot.on('interactionCreate', async interaction => {
     }
   }
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
-  const ephemeralCommands = new Set(['shop', 'buy', 'suggest', 'suggest-setup', 'giveaway', 'giveaway-reroll', 'remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
+  const ephemeralCommands = new Set(['automod-setup', 'shop', 'buy', 'suggest', 'suggest-setup', 'giveaway', 'giveaway-reroll', 'remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
   try {
     const args = extractInteractionArgs(interaction);
     if (interaction.commandName === 'poll') {
@@ -2835,8 +2878,36 @@ bot.on('interactionCreate', async interaction => {
   }
 });
 
+
+bot.on('messageDelete', message => {
+  if (!message.guild || message.author?.bot) return;
+  const content = String(message.content || '').trim().slice(0, 700);
+  addActivity(message.guild.id, message.author?.id || null, 'message:deleted',
+    'Tin nhắn bị xoá tại #' + (message.channel?.name || message.channelId || 'unknown') +
+    ' · message=' + (message.id || 'unknown') + (content ? ' · nội dung: ' + content : ' · nội dung không còn trong cache.')).catch(() => {});
+});
+bot.on('messageUpdate', (oldMessage, newMessage) => {
+  if (!newMessage.guild || newMessage.author?.bot || String(oldMessage.content || '') === String(newMessage.content || '')) return;
+  addActivity(newMessage.guild.id, newMessage.author?.id || null, 'message:edited',
+    'Tin nhắn được sửa tại #' + (newMessage.channel?.name || newMessage.channelId || 'unknown') +
+    ' · message=' + (newMessage.id || 'unknown') +
+    ' · trước: ' + String(oldMessage.content || '[không có cache]').slice(0, 450) +
+    ' · sau: ' + String(newMessage.content || '').slice(0, 450)).catch(() => {});
+});
+bot.on('guildMemberUpdate', (oldMember, newMember) => {
+  const added = [...newMember.roles.cache.values()].filter(role => !oldMember.roles.cache.has(role.id)).map(role => role.name).slice(0, 10);
+  const removed = [...oldMember.roles.cache.values()].filter(role => !newMember.roles.cache.has(role.id)).map(role => role.name).slice(0, 10);
+  const changes = [];
+  if (added.length) changes.push('role thêm: ' + added.join(', '));
+  if (removed.length) changes.push('role gỡ: ' + removed.join(', '));
+  if (oldMember.nickname !== newMember.nickname) changes.push('nickname: "' + String(oldMember.nickname || oldMember.user.username) + '" → "' + String(newMember.nickname || newMember.user.username) + '"');
+  if (!changes.length) return;
+  addActivity(newMember.guild.id, newMember.id, 'member:updated', changes.join(' · ')).catch(() => {});
+});
+
 bot.on('messageCreate', async message => {
   if (!message.guild || message.author.bot) return;
+  if (await applyAutoModeration(message)) return;
   if (/^\+legit(?:\s|$)/i.test(message.content.trim())) {
     try {
       const match = message.content.trim().match(/^\+legit(?:\s+\+?\s*(?:<@!?(\d{17,20})>|@?(\d{17,20})))?\s*$/i);
@@ -2934,11 +3005,168 @@ bot.on('messageCreate', async message => {
 });
 
 // Auto voice state recovery when Discord moves/disconnects the bot.
+
+async function applyAutoModeration(message) {
+  if (!message?.guild || message.author?.bot) return false;
+  let config;
+  try { config = await getConfig(message.guild.id); }
+  catch (error) {
+    void reportRuntimeError(error, 'automod-config', message.guild.id);
+    return false;
+  }
+  if (!config?.automod_enabled) return false;
+  const now = Date.now();
+  let reason = null;
+  const blockedDomain = findBlockedDomain(message.content, config.automod_blocked_domains || []);
+  if (blockedDomain) reason = 'blocked-link';
+  else if (isMassMention(message, config.automod_max_mentions)) reason = 'mass-mention';
+  const windowMs = Math.max(3, Number(config.automod_spam_window_seconds) || 10) * 1000;
+  const spamThreshold = Math.max(3, Number(config.automod_spam_threshold) || 5);
+  const spamKey = message.guild.id + ':' + message.channelId + ':' + message.author.id;
+  const recent = recentTimestamps(automodMessageBuckets.get(spamKey) || [], now, windowMs);
+  recent.push(now);
+  automodMessageBuckets.set(spamKey, recent);
+  if (!reason && recent.length >= spamThreshold) reason = 'spam-burst';
+  if (!reason) return false;
+
+  const me = message.guild.members.me || await message.guild.members.fetchMe().catch(() => null);
+  if (!me || !message.channel?.permissionsFor(me)?.has(PermissionFlagsBits.ManageMessages)) {
+    await addActivity(message.guild.id, message.author.id, 'automod:blocked-permission', 'AutoMod phát hiện ' + reason + ' nhưng bot thiếu Manage Messages tại #' + (message.channel?.name || 'unknown') + '.').catch(() => {});
+    return false;
+  }
+  const deleted = await message.delete().then(() => true).catch(() => false);
+  if (!deleted) {
+    await addActivity(message.guild.id, message.author.id, 'automod:delete-failed', 'Không xoá được tin nhắn bị flag ' + reason + ' tại #' + (message.channel?.name || 'unknown') + '.').catch(() => {});
+    return false;
+  }
+  await addActivity(message.guild.id, message.author.id, 'automod:' + reason,
+    'Đã xoá tin nhắn vi phạm tại #' + (message.channel?.name || 'unknown') +
+    (blockedDomain ? ' · domain=' + blockedDomain : '') + '.').catch(() => {});
+  const warningKey = message.guild.id + ':' + message.channelId + ':' + reason;
+  const lastWarning = automodWarningCooldowns.get(warningKey) || 0;
+  if (now - lastWarning > 8000) {
+    automodWarningCooldowns.set(warningKey, now);
+    message.channel.send({
+      content: reason === 'blocked-link'
+        ? '🛡️ AutoMod đã xoá liên kết thuộc danh sách domain bị chặn.'
+        : reason === 'mass-mention'
+          ? '🛡️ AutoMod đã xoá tin nhắn mass mention.'
+          : '🛡️ AutoMod đã xoá tin nhắn do gửi quá nhanh.',
+      allowedMentions: { parse: [] }
+    }).then(warning => {
+      const timer = setTimeout(() => warning.delete().catch(() => {}), 8000);
+      timer.unref?.();
+    }).catch(() => {});
+  }
+  return true;
+}
+
+async function restoreRaidLockdown(guildId) {
+  let entry = raidLockdowns.get(guildId);
+  if (!entry && pool) {
+    const saved = await dbQuery('SELECT expires_at,snapshots FROM raid_lockdowns WHERE guild_id=$1', [guildId]);
+    if (saved.rowCount) entry = { expiresAt: Number(saved.rows[0].expires_at), snapshots: saved.rows[0].snapshots || [], timer: null };
+  }
+  if (!entry) return;
+  if (entry.timer) clearTimeout(entry.timer);
+  raidLockdowns.delete(guildId);
+  const guild = bot.guilds.cache.get(guildId);
+  if (guild) {
+    for (const snapshot of entry.snapshots || []) {
+      const channel = await guild.channels.fetch(snapshot.channelId).catch(() => null);
+      if (!channel?.permissionOverwrites) continue;
+      const current = channel.permissionOverwrites.cache.get(guild.roles.everyone.id);
+      // Restore only channels that are still denied, so unrelated manual changes are less likely to be overwritten.
+      if (!current?.deny.has(PermissionFlagsBits.SendMessages)) continue;
+      await channel.permissionOverwrites.edit(guild.roles.everyone, {
+        SendMessages: snapshot.previousValue === true ? true : snapshot.previousValue === false ? false : null
+      }, 'Aki AutoMod raid lockdown expired').catch(() => {});
+    }
+    await addActivity(guildId, null, 'automod:raid-unlock', 'Đã khôi phục quyền gửi tin sau thời gian lockdown.').catch(() => {});
+  }
+  if (pool) await dbQuery('DELETE FROM raid_lockdowns WHERE guild_id=$1', [guildId]).catch(() => {});
+}
+
+function scheduleRaidLockdownRestore(guildId, entry) {
+  if (entry.timer) clearTimeout(entry.timer);
+  const delay = Math.max(0, Number(entry.expiresAt) - Date.now());
+  entry.timer = setTimeout(() => restoreRaidLockdown(guildId).catch(error => console.warn('Raid unlock failed:', error?.message || 'unknown error')), delay);
+  entry.timer.unref?.();
+  raidLockdowns.set(guildId, entry);
+}
+
+async function beginRaidLockdown(guild, config, joinCount) {
+  if (!guild || !config?.automod_enabled) return false;
+  const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  if (!me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    await addActivity(guild.id, null, 'automod:raid-lockdown-unavailable', 'Phát hiện join burst (' + joinCount + ') nhưng bot thiếu Manage Channels.').catch(() => {});
+    return false;
+  }
+  const durationMs = Math.max(30, Math.min(600, Number(config.automod_lockdown_seconds) || 60)) * 1000;
+  let entry = raidLockdowns.get(guild.id);
+  if (!entry) {
+    const excluded = new Set([config.log_channel_id, config.welcome_channel_id, config.verification_channel_id, config.suggestion_channel_id].filter(Boolean));
+    const snapshots = [];
+    for (const channel of guild.channels.cache.values()) {
+      if (![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type) || excluded.has(channel.id)) continue;
+      if (!channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) continue;
+      if (!channel.permissionsFor(me)?.has(PermissionFlagsBits.ManageChannels)) continue;
+      const previousOverwrite = channel.permissionOverwrites.cache.get(guild.roles.everyone.id);
+      const previousValue = previousOverwrite
+        ? previousOverwrite.allow.has(PermissionFlagsBits.SendMessages) ? true
+          : previousOverwrite.deny.has(PermissionFlagsBits.SendMessages) ? false : null
+        : null;
+      if (previousValue === false) continue;
+      try {
+        await channel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false }, 'Aki AutoMod detected a join raid');
+        snapshots.push({ channelId: channel.id, previousValue });
+      } catch {}
+    }
+    if (!snapshots.length) return false;
+    entry = { snapshots, expiresAt: Date.now() + durationMs, timer: null };
+  } else {
+    entry.expiresAt = Date.now() + durationMs;
+  }
+  if (pool) {
+    await dbQuery(
+      'INSERT INTO raid_lockdowns(guild_id,expires_at,snapshots) VALUES($1,$2,$3::jsonb) ON CONFLICT(guild_id) DO UPDATE SET expires_at=EXCLUDED.expires_at,snapshots=EXCLUDED.snapshots',
+      [guild.id, entry.expiresAt, JSON.stringify(entry.snapshots)]
+    );
+  }
+  scheduleRaidLockdownRestore(guild.id, entry);
+  await addActivity(guild.id, null, 'automod:raid-lockdown', 'Phát hiện join burst (' + joinCount + '). Đã khóa gửi tin công khai trong ' + Math.round(durationMs / 1000) + ' giây.').catch(() => {});
+  return true;
+}
+
+async function restorePendingRaidLockdowns() {
+  if (!pool) return;
+  const rows = await dbQuery('SELECT guild_id,expires_at,snapshots FROM raid_lockdowns');
+  for (const row of rows.rows) {
+    const entry = { expiresAt: Number(row.expires_at), snapshots: row.snapshots || [], timer: null };
+    raidLockdowns.set(row.guild_id, entry);
+    if (entry.expiresAt <= Date.now()) await restoreRaidLockdown(row.guild_id);
+    else scheduleRaidLockdownRestore(row.guild_id, entry);
+  }
+}
+
+function recordRaidJoin(guildId, now, config) {
+  const windowMs = Math.max(5, Number(config?.automod_raid_window_seconds) || 20) * 1000;
+  const threshold = Math.max(5, Number(config?.automod_raid_join_threshold) || 8);
+  const recent = recentTimestamps(raidJoinBuckets.get(guildId) || [], now, windowMs);
+  recent.push(now);
+  raidJoinBuckets.set(guildId, recent);
+  return { triggered: recent.length >= threshold, count: recent.length };
+}
+
 bot.on('guildMemberAdd', async member => {
   let autoRoleName = null;
   let cfg = null;
   try { cfg = await getConfig(member.guild.id); }
   catch (error) { void reportRuntimeError(error, 'member-join-config', member.guild.id); }
+  if (!member.user.bot && cfg?.automod_enabled) {
+    const burst = recordRaidJoin(member.guild.id, Date.now(), cfg);
+    if (burst.triggered) await beginRaidLockdown(member.guild, cfg, burst.count).catch(error => reportRuntimeError(error, 'automod-raid-lockdown', member.guild.id));
+  }
   // Welcome failures must never prevent a new member receiving their automatic role.
   try {
     if (cfg?.welcome_channel_id) {
