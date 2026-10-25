@@ -30,6 +30,7 @@ jobs:
           node --check lib/poll-utils.js
           node --check lib/activity-utils.js
           node --check lib/verification-utils.js
+          node --check lib/giveaway-utils.js
           node --test tests/*.test.js
       - name: Check critical dashboard and reaction-role hooks exist
         run: |

@@ -128,6 +128,7 @@ import { parseDuration } from '../lib/duration-utils.js';
 import { buildNativePollPayload } from '../lib/poll-utils.js';
 import { parsePagination, csvCell } from '../lib/activity-utils.js';
 import { isAccountTooNew } from '../lib/verification-utils.js';
+import { drawUniqueWinners } from '../lib/giveaway-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
   assert.equal(parseDuration('2h'), 7200);
@@ -183,4 +184,11 @@ test('account-age gate quarantines only when younger than configured threshold',
   assert.equal(isAccountTooNew(1000, 2, 1000 + day), true);
   assert.equal(isAccountTooNew(1000, 2, 1000 + 2 * day), false);
   assert.equal(isAccountTooNew('invalid', 2, 1000 + day), true);
+});
+
+test('giveaway winner selection is unique, bounded, and supports reroll exclusions', () => {
+  const entries = ['a','b','c','a','d'].map(user_id => ({ user_id }));
+  assert.deepEqual(drawUniqueWinners(entries, 2, [], () => 0), ['b','c']);
+  assert.deepEqual(drawUniqueWinners(entries, 3, ['a','b','c'], () => 0), ['d']);
+  assert.equal(drawUniqueWinners(entries, 8, [], () => 0).length, 4);
 });
