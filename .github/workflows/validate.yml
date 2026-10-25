@@ -42,6 +42,7 @@ jobs:
           node --check lib/command-routing-utils.js
           node --check lib/ux-utils.js
           node --check lib/command-registration-utils.js
+          node --check lib/runtime-diagnostics-utils.js
           node --check lib/message-template-utils.js
           node --check lib/automod-utils.js
           node --check lib/xp-utils.js
