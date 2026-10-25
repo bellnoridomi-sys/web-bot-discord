@@ -23,6 +23,7 @@ import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from '
 import { SHOP_ITEMS, getShopItem, isSafeShopRole } from './lib/shop-utils.js';
 import { nextDailyStreak, dailyStreakReward } from './lib/economy-utils.js';
 import { normalizeSaleSubmission, canPostSale, normalizeSaleCooldownMinutes } from './lib/sales-utils.js';
+import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from './lib/temp-voice-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -193,6 +194,10 @@ async function getConfig(guildId) {
     suggestion_channel_id: null,
     sale_channel_id: null,
     sale_cooldown_minutes: 30,
+    temp_voice_enabled: false,
+    temp_voice_trigger_channel_id: null,
+    temp_voice_category_id: null,
+    temp_voice_user_limit: 0,
     automod_enabled: false,
     automod_blocked_domains: [],
     automod_spam_threshold: 5,
@@ -216,8 +221,9 @@ async function setConfig(guildId, patch) {
         verification_message_id, verification_role_id, verification_quarantine_role_id,
         verification_min_account_days, suggestion_channel_id, sale_channel_id, sale_cooldown_minutes, automod_enabled, automod_blocked_domains,
         automod_spam_threshold, automod_spam_window_seconds, automod_max_mentions,
-        automod_raid_join_threshold, automod_raid_window_seconds, automod_lockdown_seconds, updated_at
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,NOW())
+        automod_raid_join_threshold, automod_raid_window_seconds, automod_lockdown_seconds,
+        temp_voice_enabled, temp_voice_trigger_channel_id, temp_voice_category_id, temp_voice_user_limit, updated_at
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,NOW())
       ON CONFLICT(guild_id) DO UPDATE SET
         auto_voice_enabled=EXCLUDED.auto_voice_enabled,
         auto_voice_channel_id=EXCLUDED.auto_voice_channel_id,
@@ -243,6 +249,10 @@ async function setConfig(guildId, patch) {
         automod_raid_join_threshold=EXCLUDED.automod_raid_join_threshold,
         automod_raid_window_seconds=EXCLUDED.automod_raid_window_seconds,
         automod_lockdown_seconds=EXCLUDED.automod_lockdown_seconds,
+        temp_voice_enabled=EXCLUDED.temp_voice_enabled,
+        temp_voice_trigger_channel_id=EXCLUDED.temp_voice_trigger_channel_id,
+        temp_voice_category_id=EXCLUDED.temp_voice_category_id,
+        temp_voice_user_limit=EXCLUDED.temp_voice_user_limit,
         updated_at=NOW()
     `, [
       guildId, Boolean(next.auto_voice_enabled), next.auto_voice_channel_id || null,
@@ -259,7 +269,9 @@ async function setConfig(guildId, patch) {
       Math.max(3, Math.min(20, Number(next.automod_max_mentions) || 5)),
       Math.max(5, Math.min(30, Number(next.automod_raid_join_threshold) || 8)),
       Math.max(5, Math.min(60, Number(next.automod_raid_window_seconds) || 20)),
-      Math.max(30, Math.min(600, Number(next.automod_lockdown_seconds) || 60))
+      Math.max(30, Math.min(600, Number(next.automod_lockdown_seconds) || 60)),
+      Boolean(next.temp_voice_enabled), next.temp_voice_trigger_channel_id || null,
+      next.temp_voice_category_id || null, normalizeVoiceUserLimit(next.temp_voice_user_limit)
     ]);
   } else memory.configs.set(guildId, next);
   return next;
@@ -1258,6 +1270,11 @@ const slashCommands = [
   new SlashCommandBuilder().setName('sell-setup').setDescription('Cấu hình kênh đăng bán và cooldown.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
     .addChannelOption(o => o.setName('channel').setDescription('Kênh đăng bán').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
     .addIntegerOption(o => o.setName('cooldown_minutes').setDescription('Cooldown mỗi người (5–1440 phút)').setMinValue(5).setMaxValue(1440).setRequired(false)),
+  new SlashCommandBuilder().setName('temp-voice-setup').setDescription('Cấu hình voice room tự tạo theo server.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+    .addBooleanOption(o => o.setName('enabled').setDescription('Bật/tắt phòng voice tạm').setRequired(true))
+    .addChannelOption(o => o.setName('trigger_channel').setDescription('Kênh voice người dùng vào để tạo phòng').addChannelTypes(ChannelType.GuildVoice).setRequired(false))
+    .addChannelOption(o => o.setName('category').setDescription('Category chứa phòng mới (tuỳ chọn)').addChannelTypes(ChannelType.GuildCategory).setRequired(false))
+    .addIntegerOption(o => o.setName('user_limit').setDescription('Giới hạn người trong phòng, 0 = không giới hạn').setMinValue(0).setMaxValue(99).setRequired(false)),
   new SlashCommandBuilder().setName('xp-setup').setDescription('Cấu hình XP, bỏ qua kênh/role, hệ số và role thưởng.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
     .addBooleanOption(o => o.setName('enabled').setDescription('Bật/tắt XP tin nhắn').setRequired(true))
     .addStringOption(o => o.setName('ignored_channels').setDescription('ID/mention kênh bỏ qua, ngăn cách bằng dấu phẩy').setMaxLength(1000).setRequired(false))
@@ -1285,7 +1302,7 @@ const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Đặt lời nhắc 30m / 2h / 1d'], ['reminders', 'Lời nhắc đang chờ'], ['reminder-cancel', 'Huỷ lời nhắc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
-  ['verify-setup', 'Cổng xác minh / role cách ly'], ['xp-setup', 'Cấu hình XP và role thưởng'], ['automod-setup', 'Cấu hình AutoMod/raid'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['sell', 'Mở form đăng bán'], ['sell-setup', 'Cấu hình kênh đăng bán'], ['automod-setup', 'Chống spam/mass mention/raid'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
+  ['verify-setup', 'Cổng xác minh / role cách ly'], ['xp-setup', 'Cấu hình XP và role thưởng'], ['automod-setup', 'Cấu hình AutoMod/raid'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['sell', 'Mở form đăng bán'], ['sell-setup', 'Cấu hình kênh đăng bán'], ['temp-voice-setup', 'Tạo voice room tạm'], ['automod-setup', 'Chống spam/mass mention/raid'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
@@ -1327,6 +1344,103 @@ function ensureRoleBelowInvoker(actor, role) {
   }
 }
 
+
+const tempVoiceCreationLocks = new Set();
+const tempVoiceDeletionLocks = new Set();
+function tempVoiceKey(guildId, channelId) { return guildId + ':' + channelId; }
+async function isTrackedTempVoiceChannel(guildId, channelId) {
+  if (pool) {
+    const result = await dbQuery('SELECT 1 FROM temp_voice_channels WHERE guild_id=$1 AND channel_id=$2', [guildId,channelId]);
+    return Boolean(result.rowCount);
+  }
+  return memory.tempVoiceChannels?.has(tempVoiceKey(guildId,channelId)) || false;
+}
+async function saveTempVoiceChannel(guildId, channelId, ownerId) {
+  if (pool) {
+    await dbQuery('INSERT INTO temp_voice_channels(guild_id,channel_id,owner_id) VALUES($1,$2,$3) ON CONFLICT(channel_id) DO UPDATE SET guild_id=EXCLUDED.guild_id,owner_id=EXCLUDED.owner_id', [guildId,channelId,ownerId]);
+    return;
+  }
+  if (!memory.tempVoiceChannels) memory.tempVoiceChannels = new Map();
+  memory.tempVoiceChannels.set(tempVoiceKey(guildId,channelId), { guild_id:guildId,channel_id,owner_id:ownerId });
+}
+async function deleteTempVoiceChannel(guildId, channelId) {
+  if (pool) {
+    await dbQuery('DELETE FROM temp_voice_channels WHERE guild_id=$1 AND channel_id=$2', [guildId,channelId]);
+    return;
+  }
+  memory.tempVoiceChannels?.delete(tempVoiceKey(guildId,channelId));
+}
+async function createTempVoiceRoom(member, config) {
+  const guild = member.guild;
+  const key = guild.id + ':' + member.id;
+  if (tempVoiceCreationLocks.has(key) || !config?.temp_voice_enabled || member.voice?.channelId !== config.temp_voice_trigger_channel_id) return null;
+  tempVoiceCreationLocks.add(key);
+  let created = null;
+  let trackSaved = false;
+  try {
+    const trigger = await guild.channels.fetch(config.temp_voice_trigger_channel_id).catch(() => null);
+    if (!trigger || trigger.type !== ChannelType.GuildVoice || trigger.guild.id !== guild.id) return null;
+    const me = guild.members.me || await guild.members.fetchMe();
+    if (!me.permissions.has([PermissionFlagsBits.ManageChannels,PermissionFlagsBits.MoveMembers,PermissionFlagsBits.Connect])) {
+      throw new Error('Bot needs Manage Channels, Move Members and Connect for temporary voice rooms.');
+    }
+    const name = normalizeTempVoiceRoomName(member.displayName || member.user.globalName || member.user.username, member.id);
+    const categoryId = config.temp_voice_category_id || trigger.parentId || undefined;
+    const category = categoryId ? await guild.channels.fetch(categoryId).catch(() => null) : null;
+    if (categoryId && (!category || category.type !== ChannelType.GuildCategory || category.guild.id !== guild.id)) throw new Error('Temporary voice category is invalid.');
+    created = await guild.channels.create({
+      name,
+      type: ChannelType.GuildVoice,
+      parent: category?.id,
+      userLimit: normalizeVoiceUserLimit(config.temp_voice_user_limit),
+      reason: 'Temporary voice room for member ' + member.id
+    });
+    await saveTempVoiceChannel(guild.id, created.id, member.id);
+    trackSaved = true;
+    if (member.voice.channelId !== config.temp_voice_trigger_channel_id) {
+      await created.delete('Member left trigger before room move');
+      await deleteTempVoiceChannel(guild.id, created.id);
+      return null;
+    }
+    await member.voice.setChannel(created, 'Temporary voice room requested by member');
+    await addActivity(guild.id, member.id, 'voice:temp-created', 'Đã tạo phòng voice tạm ' + created.name + '.').catch(() => {});
+    return created;
+  } catch (error) {
+    if (created) await created.delete('Temporary voice room creation failed').catch(() => {});
+    if (trackSaved && created) await deleteTempVoiceChannel(guild.id, created.id).catch(() => {});
+    await reportRuntimeError(error, 'temporary-voice-create', guild.id).catch(() => {});
+    return null;
+  } finally { tempVoiceCreationLocks.delete(key); }
+}
+async function cleanupTempVoiceIfEmpty(guild, channelId) {
+  const key = tempVoiceKey(guild.id, channelId);
+  if (tempVoiceDeletionLocks.has(key)) return;
+  tempVoiceDeletionLocks.add(key);
+  try {
+    const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+    if (!channel || channel.type !== ChannelType.GuildVoice || channel.members.size > 0) return;
+    if (!await isTrackedTempVoiceChannel(guild.id, channel.id)) return;
+    let deleted = false;
+    try { await channel.delete('Temporary voice room is empty'); deleted = true; }
+    catch (error) {
+      if (error?.code === 10003 || error?.status === 404) deleted = true;
+      else console.warn('Temporary voice cleanup failed:', error.message);
+    }
+    if (!deleted) return;
+    await deleteTempVoiceChannel(guild.id, channelId);
+    await addActivity(guild.id, null, 'voice:temp-deleted', 'Đã tự xoá phòng voice tạm ' + channel.name + '.').catch(() => {});
+  } finally { tempVoiceDeletionLocks.delete(key); }
+}
+async function cleanupTrackedTempVoiceRooms(guild) {
+  if (pool) {
+    const rows = await dbQuery('SELECT channel_id FROM temp_voice_channels WHERE guild_id=$1', [guild.id]);
+    for (const row of rows.rows) await cleanupTempVoiceIfEmpty(guild, row.channel_id);
+    return;
+  }
+  for (const row of [...(memory.tempVoiceChannels?.values() || [])].filter(item => item.guild_id === guild.id)) {
+    await cleanupTempVoiceIfEmpty(guild, row.channel_id);
+  }
+}
 async function joinGuildVoice(guild, channelId, source = 'manual') {
   const channel = await guild.channels.fetch(channelId);
   if (!channel || ![ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(channel.type)) throw new Error('Voice channel không hợp lệ.');
@@ -2718,6 +2832,33 @@ async function runCommand(name, ctx) {
           : '';
       return reply((enabled ? '🛡️ AutoMod đã bật.' : 'AutoMod đã tắt.') + ' Domain đang chặn: ' + (domains.join(', ') || 'chưa cấu hình') + '.' + raidNote);
     }
+    case 'temp-voice-setup': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      const current = await getConfig(guild.id);
+      if (!args.enabled) {
+        await setConfig(guild.id, { temp_voice_enabled: false });
+        await addActivity(guild.id, userId, 'voice:temp-disabled', 'Đã tắt tạo voice room tạm.');
+        return reply('🎧 Đã tắt voice room tạm. Phòng hiện có sẽ được dọn khi trống.');
+      }
+      const triggerId = args.triggerChannel || args.trigger_channel || current.temp_voice_trigger_channel_id;
+      const trigger = triggerId ? await guild.channels.fetch(triggerId).catch(() => null) : null;
+      if (!trigger || trigger.type !== ChannelType.GuildVoice || trigger.guild?.id !== guild.id) throw new Error('Khi bật tính năng, hãy chọn một kênh voice trigger hợp lệ.');
+      const categoryId = args.categoryId || args.category || current.temp_voice_category_id || trigger.parentId || null;
+      const category = categoryId ? await guild.channels.fetch(categoryId).catch(() => null) : null;
+      if (categoryId && (!category || category.type !== ChannelType.GuildCategory || category.guild?.id !== guild.id)) throw new Error('Category chứa phòng tạm không hợp lệ.');
+      const me = guild.members.me || await guild.members.fetchMe();
+      if (!me.permissions.has([PermissionFlagsBits.ManageChannels,PermissionFlagsBits.MoveMembers,PermissionFlagsBits.Connect])) throw new Error('Bot cần Manage Channels, Move Members và Connect.');
+      const perms = trigger.permissionsFor(me);
+      if (!perms?.has([PermissionFlagsBits.ViewChannel,PermissionFlagsBits.Connect])) throw new Error('Bot cần View Channel và Connect trong kênh trigger.');
+      await setConfig(guild.id, {
+        temp_voice_enabled: true,
+        temp_voice_trigger_channel_id: trigger.id,
+        temp_voice_category_id: category?.id || null,
+        temp_voice_user_limit: normalizeVoiceUserLimit(args.userLimit ?? args.user_limit ?? current.temp_voice_user_limit)
+      });
+      await addActivity(guild.id,userId,'voice:temp-enabled','Bật tạo voice room từ #' + trigger.name + '.');
+      return reply('✅ Đã bật voice room tạm. Khi thành viên vào <#' + trigger.id + '>, bot sẽ tạo phòng tạm và xoá khi không còn người.');
+    }
     case 'sell-setup': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
       const targetChannel = args.channel ? await guild.channels.fetch(args.channel).catch(() => null) : null;
@@ -2946,6 +3087,12 @@ function extractInteractionArgs(interaction) {
     out.channel = interaction.options.getChannel('channel')?.id;
     out.cooldownMinutes = interaction.options.getInteger('cooldown_minutes');
   }
+  if (interaction.commandName === 'temp-voice-setup') {
+    out.enabled = interaction.options.getBoolean('enabled');
+    out.triggerChannel = interaction.options.getChannel('trigger_channel')?.id;
+    out.categoryId = interaction.options.getChannel('category')?.id;
+    out.userLimit = interaction.options.getInteger('user_limit');
+  }
   if (interaction.commandName === 'verify-setup') {
     out.enabled = interaction.options.getBoolean('enabled');
     out.verifyRole = interaction.options.getRole('member_role')?.id;
@@ -2983,6 +3130,7 @@ bot.on('ready', async () => {
       const ticket = parseAkiTicketTopic(channel.topic);
       if (ticket.status === 'closed' && ticket.closedAt) scheduleClosedTicketDeletion(channel, ticket.closedAt);
     }
+    await cleanupTrackedTempVoiceRooms(guild).catch(error => reportRuntimeError(error, 'temporary-voice-startup-cleanup', guild.id));
     const cfg = await getConfig(guild.id);
     if (cfg.auto_voice_enabled && cfg.auto_voice_channel_id) joinGuildVoice(guild, cfg.auto_voice_channel_id, 'auto').catch(e => console.error(`Auto voice ${guild.id}:`, e.message));
   }
@@ -3501,10 +3649,27 @@ bot.on('guildMemberRemove', async member => {
   addActivity(member.guild.id, member.id, 'member:leave', `👋 ${member.user.globalName || member.user.username} đã rời server.`).catch(() => {});
 });
 bot.on('voiceStateUpdate', async (oldState, newState) => {
-  if (!bot.user || newState.id !== bot.user.id) return;
-  const cfg = await getConfig(newState.guild.id);
-  if (cfg.auto_voice_enabled && cfg.auto_voice_channel_id && !newState.channelId) {
-    scheduleAutoVoiceReconnect(newState.guild, cfg.auto_voice_channel_id, 4_000);
+  const guild = newState.guild || oldState.guild;
+  if (!guild) return;
+  if (bot.user && newState.id === bot.user.id) {
+    const cfg = await getConfig(guild.id);
+    if (cfg.auto_voice_enabled && cfg.auto_voice_channel_id && !newState.channelId) {
+      scheduleAutoVoiceReconnect(guild, cfg.auto_voice_channel_id, 4_000);
+    }
+    return;
+  }
+  const member = newState.member || oldState.member;
+  if (!member || member.user.bot) return;
+  try {
+    const cfg = await getConfig(guild.id);
+    if (cfg.temp_voice_enabled && newState.channelId === cfg.temp_voice_trigger_channel_id && oldState.channelId !== newState.channelId) {
+      await createTempVoiceRoom(member, cfg);
+    }
+    if (oldState.channelId && oldState.channelId !== newState.channelId) {
+      await cleanupTempVoiceIfEmpty(guild, oldState.channelId);
+    }
+  } catch (error) {
+    await reportRuntimeError(error, 'temporary-voice-state', guild.id).catch(() => {});
   }
 });
 

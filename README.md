@@ -104,3 +104,8 @@ The Blueprint uses a paid Starter web service so the single process hosting the 
 ### Marketplace posts
 
 Server owners can run `/sell-setup` to choose the listing channel and a per-member cooldown (5–1440 minutes). Members use `/sell` to open the Discord modal. Listing fields are sanitized to prevent user/role mention parsing and saved in the `sale_posts` table; cooldown reservations are serialized in Postgres to avoid simultaneous submissions bypassing the limit.
+
+
+### Temporary voice rooms
+
+Use /temp-voice-setup with enabled=true, a trigger voice channel, and an optional category/user limit. The bot needs Manage Channels, Move Members and Connect; it creates a temporary voice room when a member joins the trigger, moves the member into it, and deletes tracked empty rooms. Empty tracked rooms are reconciled after restart.

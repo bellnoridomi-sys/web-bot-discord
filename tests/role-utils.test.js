@@ -135,6 +135,7 @@ import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from '
 import { SHOP_ITEMS, getShopItem, isSafeShopRole } from '../lib/shop-utils.js';
 import { nextDailyStreak, dailyStreakReward, UTC_DAY_MS } from '../lib/economy-utils.js';
 import { normalizeSaleSubmission, canPostSale, normalizeSaleCooldownMinutes } from '../lib/sales-utils.js';
+import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from '../lib/temp-voice-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, isRaidJoinBurst } from '../lib/automod-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
@@ -320,4 +321,12 @@ test('sale cooldown blocks concurrent repeat posts until configured expiry', () 
   assert.deepEqual(canPostSale(1000, 1000 + 30 * 60000, 30), { allowed: true, nextAt: 1000 + 30 * 60000 });
   assert.equal(normalizeSaleCooldownMinutes(1), 5);
   assert.equal(normalizeSaleCooldownMinutes(5000), 1440);
+});
+
+test('temporary voice names are safe and user limits stay within Discord bounds', () => {
+  assert.equal(normalizeTempVoiceRoomName('Bad @Name#1234', '123456789012345678'), 'temp・Bad-Name1234-5678');
+  assert.ok(normalizeTempVoiceRoomName('x'.repeat(150), '123456789012345678').length <= 100);
+  assert.equal(normalizeVoiceUserLimit(-1), 0);
+  assert.equal(normalizeVoiceUserLimit(25), 25);
+  assert.equal(normalizeVoiceUserLimit(120), 99);
 });
