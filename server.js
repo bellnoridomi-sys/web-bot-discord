@@ -11,7 +11,7 @@ import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sa
 import { isAllowedOrigin } from './lib/security-utils.js';
 import { normalizeMediaUrl } from './lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
-import { vouchDenialReason, formatAuditReason } from './lib/moderation-utils.js';
+import { vouchDenialReason, formatAuditReason, shouldEscalateWarnings } from './lib/moderation-utils.js';
 import { parseDuration } from './lib/duration-utils.js';
 import { buildNativePollPayload } from './lib/poll-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
@@ -1712,7 +1712,20 @@ async function runCommand(name, ctx) {
       const record = await addModerationCase(guild.id, target.id, userId, 'warn', audit);
       const count = (await getWarnings(guild.id, target.id)).length;
       await target.send(`⚠️ Bạn vừa nhận cảnh cáo tại **${guild.name}**. Lý do: ${String(args.reason || 'Không có lý do').slice(0, 800)}`).catch(() => {});
-      return reply(`⚠️ Đã cảnh cáo **${target.user.globalName || target.user.username}**. Tổng: **${count}**. Case #${record.case_id}.`);
+      let escalationMessage = '';
+      const threshold = Number.parseInt(process.env.WARN_ESCALATION_THRESHOLD || '3', 10);
+      const escalationMinutes = Number.parseInt(process.env.WARN_ESCALATION_MINUTES || '10', 10);
+      if (shouldEscalateWarnings(count, threshold) && Number.isInteger(escalationMinutes) && escalationMinutes >= 1 && escalationMinutes <= 40320 && target.moderatable) {
+        try {
+          const escalationAudit = formatAuditReason(userName, 'Tự động timeout sau ' + count + ' cảnh cáo (' + threshold + ' mỗi chu kỳ).');
+          await target.timeout(escalationMinutes * 60_000, escalationAudit);
+          const escalationCase = await addModerationCase(guild.id, target.id, userId, 'auto-timeout', escalationAudit);
+          escalationMessage = ' ⏳ Đã tự động timeout ' + escalationMinutes + ' phút theo ngưỡng cảnh cáo; case #' + escalationCase.case_id + '.';
+        } catch (error) {
+          console.warn('Warning escalation failed:', error?.message || 'unknown error');
+        }
+      }
+      return reply(`⚠️ Đã cảnh cáo **${target.user.globalName || target.user.username}**. Tổng: **${count}**. Case #${record.case_id}.` + escalationMessage);
     }
     case 'warnings': {
       ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
@@ -1927,8 +1940,8 @@ function extractInteractionArgs(interaction) {
   const out = {};
   if (['userinfo', 'avatar', 'warnings', 'legit', 'rank', 'balance', 'vouch', 'vouches', 'untimeout', 'modlog'].includes(interaction.commandName)) out.user = getUserId();
   if (['ticket-setup', 'role-panel'].includes(interaction.commandName)) out.channel = interaction.options.getChannel('channel')?.id || undefined;
-  if (['warn', 'kick', 'ban', 'timeout'].includes(interaction.commandName)) { out.user = getUserId(); }
-  if (interaction.commandName === 'warn' || interaction.commandName === 'kick' || interaction.commandName === 'ban' || interaction.commandName === 'timeout') out.reason = interaction.options.getString('reason');
+  if (['warn', 'kick', 'ban', 'tempban', 'timeout'].includes(interaction.commandName)) { out.user = getUserId(); }
+  if (['warn', 'kick', 'ban', 'tempban', 'timeout'].includes(interaction.commandName)) out.reason = interaction.options.getString('reason');
   if (['timeout', 'tempban'].includes(interaction.commandName)) out.minutes = interaction.options.getInteger('minutes');
   if (interaction.commandName === 'untimeout') out.reason = interaction.options.getString('reason');
   if (interaction.commandName === 'unban') { out.userId = interaction.options.getString('user_id'); out.reason = interaction.options.getString('reason'); }

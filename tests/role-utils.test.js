@@ -154,3 +154,13 @@ test('native poll payload sanitizes role mentions and requires two distinct answ
   assert.throws(() => buildNativePollPayload({ question: 'Only one', options: ['One'] }), /ít nhất hai/);
   assert.throws(() => buildNativePollPayload({ question: 'Duplicate', options: ['Same','same'] }), /không được trùng/);
 });
+
+test('warning escalation triggers only on positive multiples of the configured threshold', async () => {
+  const { shouldEscalateWarnings } = await import('../lib/moderation-utils.js');
+  assert.equal(shouldEscalateWarnings(3, 3), true);
+  assert.equal(shouldEscalateWarnings(6, 3), true);
+  assert.equal(shouldEscalateWarnings(4, 3), false);
+  assert.equal(shouldEscalateWarnings(0, 3), false);
+  assert.equal(shouldEscalateWarnings(3, 0), false);
+  assert.equal(shouldEscalateWarnings(3, 2.5), false);
+});
