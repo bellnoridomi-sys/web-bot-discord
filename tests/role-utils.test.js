@@ -126,6 +126,7 @@ test('temporary ban expiry check handles future, due, and invalid timestamps', a
 
 import { parseDuration } from '../lib/duration-utils.js';
 import { buildNativePollPayload } from '../lib/poll-utils.js';
+import { parsePagination, csvCell } from '../lib/activity-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
   assert.equal(parseDuration('2h'), 7200);
@@ -163,4 +164,14 @@ test('warning escalation triggers only on positive multiples of the configured t
   assert.equal(shouldEscalateWarnings(0, 3), false);
   assert.equal(shouldEscalateWarnings(3, 0), false);
   assert.equal(shouldEscalateWarnings(3, 2.5), false);
+});
+
+test('pagination is bounded and produces deterministic offsets', () => {
+  assert.deepEqual(parsePagination('3','20'), { page: 3, limit: 20, offset: 40 });
+  assert.deepEqual(parsePagination('-5','500'), { page: 1, limit: 50, offset: 0 });
+});
+test('CSV export quotes delimiters and neutralizes spreadsheet formulas', () => {
+  assert.equal(csvCell('plain, "quoted"'), '"plain, ""quoted"""');
+  assert.equal(csvCell('=CMD()'), '"\'=CMD()"');
+  assert.equal(csvCell('hello\\nworld'), '"hello world"');
 });

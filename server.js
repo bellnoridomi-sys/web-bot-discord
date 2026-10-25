@@ -14,6 +14,7 @@ import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
 import { vouchDenialReason, formatAuditReason, shouldEscalateWarnings } from './lib/moderation-utils.js';
 import { parseDuration } from './lib/duration-utils.js';
 import { buildNativePollPayload } from './lib/poll-utils.js';
+import { parsePagination, csvCell } from './lib/activity-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
@@ -2350,11 +2351,50 @@ app.get('/api/me', async (req, res) => {
 });
 app.get('/api/activity', requireAuth, async (req, res) => {
   const allowed = new Set((req.session.guilds || []).filter(g => bot.guilds.cache.has(g.id) && canManageGuildFromOAuthMeta(g)).map(g => g.id));
+  if (req.query.guildId && !allowed.has(String(req.query.guildId))) return res.status(403).json({ error: 'NO_GUILD_ACCESS' });
+  const guildId = req.query.guildId ? String(req.query.guildId) : null;
+  const query = String(req.query.q || '').trim().slice(0, 120);
+  const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 50);
   if (pool) {
-    const r = await dbQuery('SELECT guild_id,user_id,action,details,created_at FROM activity WHERE guild_id = ANY($1) ORDER BY created_at DESC LIMIT 30', [[...allowed]]);
-    return res.json({ items: r.rows });
+    const clauses = ['guild_id = ANY($1)'];
+    const values = [[...allowed]];
+    if (guildId) { values.push(guildId); clauses.push(`guild_id = $${values.length}`); }
+    if (query) { values.push('%' + query + '%'); const q = '$' + values.length; clauses.push(`(action ILIKE ${q} OR details ILIKE ${q} OR COALESCE(user_id,'') ILIKE ${q})`); }
+    const where = clauses.join(' AND ');
+    const totalResult = await dbQuery('SELECT COUNT(*)::int AS total FROM activity WHERE ' + where, values);
+    const total = Number(totalResult.rows[0]?.total || 0);
+    const pagedValues = [...values, limit, offset];
+    const rows = await dbQuery('SELECT guild_id,user_id,action,details,created_at FROM activity WHERE ' + where + ' ORDER BY created_at DESC LIMIT $' + (values.length + 1) + ' OFFSET $' + (values.length + 2), pagedValues);
+    return res.json({ items: rows.rows, page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) });
   }
-  res.json({ items: activityCache.filter(x => !x.guild_id || allowed.has(x.guild_id)).slice(0, 30) });
+  const matching = activityCache.filter(row => row.guild_id && allowed.has(row.guild_id) && (!guildId || row.guild_id === guildId) &&
+    (!query || [row.action, row.details, row.user_id].some(value => String(value || '').toLowerCase().includes(query.toLowerCase()))));
+  return res.json({ items: matching.slice(offset, offset + limit), page, limit, total: matching.length, pages: Math.max(1, Math.ceil(matching.length / limit)) });
+});
+
+app.get('/api/activity/export', requireAuth, async (req, res) => {
+  const allowed = new Set((req.session.guilds || []).filter(g => bot.guilds.cache.has(g.id) && canManageGuildFromOAuthMeta(g)).map(g => g.id));
+  if (req.query.guildId && !allowed.has(String(req.query.guildId))) return res.status(403).json({ error: 'NO_GUILD_ACCESS' });
+  const guildId = req.query.guildId ? String(req.query.guildId) : null;
+  const query = String(req.query.q || '').trim().slice(0, 120);
+  let rows = [];
+  if (pool) {
+    const clauses = ['guild_id = ANY($1)'];
+    const values = [[...allowed]];
+    if (guildId) { values.push(guildId); clauses.push(`guild_id = $${values.length}`); }
+    if (query) { values.push('%' + query + '%'); const q = '$' + values.length; clauses.push(`(action ILIKE ${q} OR details ILIKE ${q} OR COALESCE(user_id,'') ILIKE ${q})`); }
+    rows = (await dbQuery('SELECT guild_id,user_id,action,details,created_at FROM activity WHERE ' + clauses.join(' AND ') + ' ORDER BY created_at DESC LIMIT 5000', values)).rows;
+  } else {
+    rows = activityCache.filter(row => row.guild_id && allowed.has(row.guild_id) && (!guildId || row.guild_id === guildId) &&
+      (!query || [row.action, row.details, row.user_id].some(value => String(value || '').toLowerCase().includes(query.toLowerCase())))).slice(0, 5000);
+  }
+  const lines = [['created_at','guild_id','user_id','action','details'].map(csvCell).join(',')];
+  for (const row of rows) lines.push([row.created_at,row.guild_id,row.user_id,row.action,row.details].map(csvCell).join(','));
+  const filename = 'aki-activity-' + new Date().toISOString().slice(0,10) + '.csv';
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="' + filename + '"');
+  res.setHeader('Cache-Control', 'no-store');
+  return res.send('\uFEFF' + lines.join('\r\n'));
 });
 app.get('/api/guilds/:guildId/channels', requireAuth, async (req, res) => {
   const g = bot.guilds.cache.get(req.params.guildId);
@@ -2363,6 +2403,64 @@ app.get('/api/guilds/:guildId/channels', requireAuth, async (req, res) => {
   if (!canManageGuildFromOAuthMeta(meta)) return res.status(403).json({ error: 'NO_GUILD_PERMISSION' });
   await g.channels.fetch();
   res.json({ channels: [...g.channels.cache.values()].filter(c => [ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(c.type)).sort((a,b) => a.position-b.position).map(c => ({ id: c.id, name: c.name, type: c.type })) });
+});
+app.get('/api/guilds/:guildId/moderation/warnings', requireAuth, async (req, res) => {
+  try {
+    const { guild } = await requireGuildControl(req, res);
+    const actorId = discordActorId(req.session);
+    const actor = actorId ? await fetchGuildMember(guild, actorId) : null;
+    if (!actor || (!actor.permissions.has(PermissionFlagsBits.ModerateMembers) && actor.id !== guild.ownerId)) return res.status(403).json({ error: 'MODERATOR_REQUIRED' });
+    const query = String(req.query.q || '').trim().slice(0, 100);
+    const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 50);
+    if (pool) {
+      const clauses = ['guild_id=$1'];
+      const values = [guild.id];
+      if (query) { values.push('%' + query + '%'); const q = '$' + values.length; clauses.push(`(user_id ILIKE ${q} OR reason ILIKE ${q} OR moderator_id ILIKE ${q})`); }
+      const where = clauses.join(' AND ');
+      const totalRows = await dbQuery('SELECT COUNT(*)::int AS total FROM warnings WHERE ' + where, values);
+      const total = Number(totalRows.rows[0]?.total || 0);
+      const rows = await dbQuery('SELECT id,guild_id,user_id,moderator_id,reason,created_at FROM warnings WHERE ' + where + ' ORDER BY created_at DESC LIMIT $' + (values.length + 1) + ' OFFSET $' + (values.length + 2), [...values, limit, offset]);
+      return res.json({ items: rows.rows, page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) });
+    }
+    const all = [...memory.warnings.values()].flat().filter(row => row.guild_id === guild.id && (!query || [row.user_id,row.moderator_id,row.reason].some(value => String(value || '').toLowerCase().includes(query.toLowerCase())))).sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)));
+    return res.json({ items: all.slice(offset, offset + limit), page, limit, total: all.length, pages: Math.max(1, Math.ceil(all.length / limit)) });
+  } catch (error) { return res.status(error.status || 500).json({ error: error.message || 'WARNINGS_UNAVAILABLE' }); }
+});
+app.delete('/api/guilds/:guildId/moderation/warnings/:warningId', requireAuth, async (req, res) => {
+  try {
+    const { guild } = await requireGuildControl(req, res);
+    const actorId = discordActorId(req.session);
+    const actor = actorId ? await fetchGuildMember(guild, actorId) : null;
+    if (!actor || (!actor.permissions.has(PermissionFlagsBits.ModerateMembers) && actor.id !== guild.ownerId)) return res.status(403).json({ error: 'MODERATOR_REQUIRED' });
+    const warningId = Number(req.params.warningId);
+    if (!Number.isSafeInteger(warningId) || warningId < 1) return res.status(400).json({ error: 'INVALID_WARNING_ID' });
+    const deleted = await deleteWarning(guild.id, warningId);
+    if (!deleted) return res.status(404).json({ error: 'WARNING_NOT_FOUND' });
+    const record = await addModerationCase(guild.id, deleted.user_id, actorId, 'delwarn', formatAuditReason(actor.displayName || actor.user.username, 'Xoá cảnh cáo #' + warningId));
+    return res.json({ ok: true, warningId, caseId: record.case_id });
+  } catch (error) { return res.status(error.status || 500).json({ error: error.message || 'WARNING_DELETE_FAILED' }); }
+});
+app.get('/api/guilds/:guildId/moderation/cases', requireAuth, async (req, res) => {
+  try {
+    const { guild } = await requireGuildControl(req, res);
+    const actorId = discordActorId(req.session);
+    const actor = actorId ? await fetchGuildMember(guild, actorId) : null;
+    if (!actor || (!actor.permissions.has(PermissionFlagsBits.ModerateMembers) && actor.id !== guild.ownerId)) return res.status(403).json({ error: 'MODERATOR_REQUIRED' });
+    const query = String(req.query.q || '').trim().slice(0, 100);
+    const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 50);
+    let all;
+    if (pool) {
+      const values = [guild.id];
+      let where = 'guild_id=$1';
+      if (query) { values.push('%' + query + '%'); const q = '$' + values.length; where += ` AND (target_user_id ILIKE ${q} OR moderator_id ILIKE ${q} OR action ILIKE ${q} OR reason ILIKE ${q})`; }
+      const totalResult = await dbQuery('SELECT COUNT(*)::int AS total FROM moderation_cases WHERE ' + where, values);
+      const total = Number(totalResult.rows[0]?.total || 0);
+      const rows = await dbQuery('SELECT case_id,target_user_id,moderator_id,action,reason,created_at FROM moderation_cases WHERE ' + where + ' ORDER BY case_id DESC LIMIT $' + (values.length + 1) + ' OFFSET $' + (values.length + 2), [...values, limit, offset]);
+      return res.json({ items: rows.rows, page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) });
+    }
+    all = memory.moderationCases.filter(row => row.guild_id === guild.id && (!query || [row.target_user_id,row.moderator_id,row.action,row.reason].some(value=>String(value||'').toLowerCase().includes(query.toLowerCase()))));
+    return res.json({ items: all.slice(offset, offset+limit), page, limit, total: all.length, pages: Math.max(1,Math.ceil(all.length/limit)) });
+  } catch (error) { return res.status(error.status || 500).json({ error: error.message || 'MODLOG_UNAVAILABLE' }); }
 });
 app.get('/api/guilds/:guildId/members', requireAuth, async (req, res) => {
   const guild = bot.guilds.cache.get(req.params.guildId);
@@ -2770,6 +2868,8 @@ const INDEX_FILE = path.join(PUBLIC_DIR, 'index.html');
 app.use(express.static(PUBLIC_DIR, { extensions: ['html'] }));
 app.get('/privacy', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'privacy.html')));
 app.get('/terms', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'terms.html')));
+app.get('/activity', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'activity.html')));
+app.get('/moderation/:guildId', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'moderation.html')));
 app.get('/leaderboard/:guildId', (req, res) => {
   if (!/^[0-9]{17,20}$/.test(String(req.params.guildId || ''))) return res.status(400).type('text/plain').send('Invalid Discord server ID.');
   return res.sendFile(path.join(PUBLIC_DIR, 'leaderboard.html'));
