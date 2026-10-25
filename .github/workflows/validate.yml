@@ -22,6 +22,7 @@ jobs:
           node --check public/script.js
           node --check lib/role-utils.js
           node --check lib/security-utils.js
+          node --check lib/db-ssl-utils.js
           node --check lib/ticket-utils.js
           node --check lib/media-utils.js
           node --check lib/community-utils.js
