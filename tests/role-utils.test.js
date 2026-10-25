@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan, canManageTarget, canAssignRole } from '../lib/role-utils.js';
-import { isAllowedOrigin, websocketOriginFromSiteUrl } from '../lib/security-utils.js';
+import { isAllowedOrigin, websocketOriginFromSiteUrl, canControlGuild, isCurrentGuildMember } from '../lib/security-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from '../lib/ticket-utils.js';
 import { normalizeMediaUrl } from '../lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from '../lib/community-utils.js';
@@ -53,6 +53,30 @@ test('sanitizes role and mass mentions in poll text', () => {
   assert.equal(sanitizePollText('<@123456789012345678> <@&123456789012345678>'),
     '<@\u200b123456789012345678> <@\u200b&123456789012345678>');
 });
+
+test('live dashboard control requires current Manage Guild/Administrator permissions or ownership', () => {
+  const owner = '111111111111111111';
+  const admin = '222222222222222222';
+  const moderator = '333333333333333333';
+  const formerAdmin = '444444444444444444';
+  assert.equal(canControlGuild(owner, owner, 0n), true);
+  assert.equal(canControlGuild(admin, owner, 8n), true);
+  assert.equal(canControlGuild(moderator, owner, 32n), true);
+  assert.equal(canControlGuild(formerAdmin, owner, 4n), false);
+  assert.equal(canControlGuild(formerAdmin, owner, 0n), false);
+  assert.equal(canControlGuild(null, owner, 8n), false);
+  assert.equal(canControlGuild(formerAdmin, owner, 'not-a-bitfield'), false);
+});
+
+test('personal guild endpoints require the same live Discord member in the requested guild', () => {
+  const user = '111111111111111111';
+  const guild = '222222222222222222';
+  assert.equal(isCurrentGuildMember(user, guild, user, guild), true);
+  assert.equal(isCurrentGuildMember(user, guild, '333333333333333333', guild), false);
+  assert.equal(isCurrentGuildMember(user, guild, user, '444444444444444444'), false);
+  assert.equal(isCurrentGuildMember(null, guild, user, guild), false);
+});
+
 test('rejects missing, malformed, and foreign origins', () => {
   assert.equal(isAllowedOrigin('https://aki.example', 'https://aki.example/path'), true);
   assert.equal(isAllowedOrigin('https://evil.example', 'https://aki.example'), false);
