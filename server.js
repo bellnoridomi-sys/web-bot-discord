@@ -13,7 +13,7 @@ import { normalizeMediaUrl } from './lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
 import { vouchDenialReason, formatAuditReason } from './lib/moderation-utils.js';
 import { parseDuration } from './lib/duration-utils.js';
-import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS } from './lib/ticket-utils.js';
+import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
 import {
@@ -28,6 +28,9 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   REST,
   Routes,
   SlashCommandBuilder
@@ -1334,11 +1337,15 @@ async function setupTicketPanel(guild, channel, actorId) {
   const perms = channel.permissionsFor(me);
   if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) throw new Error('Bot cần View Channel, Send Messages và Embed Links ở kênh panel.');
   const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
-  const existing = recent?.find(item => item.author.id === bot.user?.id && item.components.some(row => row.components.some(component => component.customId === 'aki:ticket:create')));
+  const existing = recent?.find(item => item.author.id === bot.user?.id && item.components.some(row => row.components.some(component => component.customId === 'aki:ticket:create' || String(component.customId || '').startsWith('aki:ticket:create:'))));
   if (existing) return existing;
-  const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('aki:ticket:create').setLabel('🎫 Mở ticket hỗ trợ').setStyle(ButtonStyle.Primary));
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('aki:ticket:create:support').setLabel('🎫 Hỗ trợ').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('aki:ticket:create:middleman').setLabel('🤝 Middleman').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('aki:ticket:create:scam-report').setLabel('🚨 Báo cáo scam').setStyle(ButtonStyle.Danger)
+  );
   const message = await channel.send({
-    embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('🎫 Trung tâm hỗ trợ').setDescription('Nhấn **Mở ticket hỗ trợ** để tạo một kênh riêng tư với đội ngũ.\n\nKhông gửi mật khẩu, token hoặc thông tin thanh toán nhạy cảm.').setFooter({ text: 'Aki Dev · Ticket System' })],
+    embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('🎫 Trung tâm hỗ trợ').setDescription('Chọn loại yêu cầu để mở form ticket riêng tư.\n\nKhông gửi mật khẩu, token hoặc thông tin thanh toán nhạy cảm.').setFooter({ text: 'Aki Dev · Ticket System' })],
     components: [row], allowedMentions: { parse: [] }
   });
   await addActivity(guild.id, actorId, 'ticket:panel', 'Đã đăng panel ticket tại #' + channel.name + '.');
@@ -1397,6 +1404,64 @@ async function sendTicketTranscript(channel, ownerId, closedBy) {
   return true;
 }
 
+async function handleAkiModalSubmit(interaction) {
+  const prefix = 'aki:ticket:submit:';
+  if (!interaction.customId?.startsWith(prefix) || !interaction.guild) return false;
+  const type = normalizeTicketType(interaction.customId.slice(prefix.length));
+  if (!type) {
+    await interaction.reply({ content: 'Loại ticket không hợp lệ. Hãy mở lại panel ticket.', ephemeral: true });
+    return true;
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const guild = interaction.guild;
+  const member = await guild.members.fetch(interaction.user.id);
+  await guild.channels.fetch();
+  const existing = guild.channels.cache.find(c => c.type === ChannelType.GuildText && isOpenAkiTicket(c.topic, member.id));
+  if (existing) {
+    await interaction.editReply({ content: 'Bạn đã có ticket đang mở: ' + existing.toString() });
+    return true;
+  }
+  const description = String(interaction.fields.getTextInputValue('description') || '').trim().slice(0, 1800);
+  if (!description) {
+    await interaction.editReply({ content: 'Hãy nhập mô tả yêu cầu trước khi gửi.' });
+    return true;
+  }
+  const { category, staffRoles, me } = await ensureTicketCategory(guild);
+  const slug = String(member.user.username || 'member').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'member';
+  const label = ticketTypeLabel(type);
+  const overwrites = [
+    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+    { id: member.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] },
+    { id: me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageMessages] }
+  ];
+  for (const role of staffRoles) overwrites.push({ id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] });
+  const ticket = await guild.channels.create({
+    name: ('ticket-' + type + '-' + slug).slice(0, 100),
+    type: ChannelType.GuildText,
+    parent: category.id,
+    topic: 'aki-ticket-owner=' + member.id + ';aki-ticket-type=' + type,
+    permissionOverwrites: overwrites,
+    reason: 'Aki ticket opened by ' + member.id + ' (' + type + ')'
+  });
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('aki:ticket:claim').setLabel('🙋 Staff nhận xử lý').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('aki:ticket:close').setLabel('🔒 Đóng ticket').setStyle(ButtonStyle.Danger)
+  );
+  const descriptionEmbed = new EmbedBuilder().setColor(0x5865F2).setTitle('🎫 ' + label)
+    .setDescription(description)
+    .addFields({ name: 'Người mở', value: '<@' + member.id + '>', inline: true }, { name: 'Trạng thái', value: '🟡 Chờ staff nhận xử lý', inline: true })
+    .setFooter({ text: 'Aki Dev · Ticket System' }).setTimestamp();
+  await ticket.send({
+    content: '🔔 Ticket mới · ' + label,
+    embeds: [descriptionEmbed],
+    components: [row],
+    allowedMentions: { parse: [] }
+  });
+  await interaction.editReply({ content: '✅ Ticket ' + label + ' đã được tạo: ' + ticket.toString() });
+  await addActivity(guild.id, member.id, 'ticket:created', 'Đã mở #' + ticket.name + ' (' + type + ').').catch(() => {});
+  return true;
+}
+
 async function handleAkiButton(interaction) {
   const customId = interaction.customId || '';
   if (!customId.startsWith('aki:') || !interaction.guild) return false;
@@ -1439,24 +1504,39 @@ async function handleAkiButton(interaction) {
     await addActivity(guild.id, interaction.user.id, hadRole ? 'role:self-remove' : 'role:self-add', role.name + ' · từ role panel').catch(() => {});
     return true;
   }
-  if (customId === 'aki:ticket:create') {
+  if (customId === 'aki:ticket:create' || customId.startsWith('aki:ticket:create:')) {
+    const requestedType = customId === 'aki:ticket:create' ? 'support' : normalizeTicketType(customId.slice('aki:ticket:create:'.length));
+    if (!requestedType) { await interaction.reply({ content: 'Loại ticket không hợp lệ.', ephemeral: true }); return true; }
+    const modal = new ModalBuilder()
+      .setCustomId('aki:ticket:submit:' + requestedType)
+      .setTitle('Ticket · ' + ticketTypeLabel(requestedType))
+      .addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('description').setLabel('Mô tả yêu cầu').setStyle(TextInputStyle.Paragraph)
+          .setMinLength(5).setMaxLength(1800).setRequired(true)
+          .setPlaceholder('Mô tả ngắn gọn tình huống, không gửi mật khẩu/token.')
+      ));
+    await interaction.showModal(modal);
+    return true;
+  }
+  if (customId === 'aki:ticket:claim') {
+    const channel = interaction.channel;
+    const ticketMeta = parseAkiTicketTopic(channel?.topic);
+    if (!channel || channel.type !== ChannelType.GuildText || !ticketMeta.ownerId || ticketMeta.status === 'closed') {
+      await interaction.reply({ content: 'Ticket này không còn mở hoặc không hợp lệ.', ephemeral: true }); return true;
+    }
     const member = await guild.members.fetch(interaction.user.id);
-    await guild.channels.fetch();
-    const existing = guild.channels.cache.find(c => c.type === ChannelType.GuildText && isOpenAkiTicket(c.topic, member.id));
-    if (existing) { await interaction.reply({ content: 'Bạn đã có ticket đang mở: ' + existing.toString(), ephemeral: true }); return true; }
-    const { category, staffRoles, me } = await ensureTicketCategory(guild);
-    const slug = String(member.user.username || 'member').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'member';
-    const overwrites = [
-      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-      { id: member.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] },
-      { id: me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageMessages] }
-    ];
-    for (const role of staffRoles) overwrites.push({ id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] });
-    const ticket = await guild.channels.create({ name: 'ticket-' + slug, type: ChannelType.GuildText, parent: category.id, topic: 'aki-ticket-owner=' + member.id, permissionOverwrites: overwrites, reason: 'Ticket opened by ' + member.id });
-    const closeRow = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('aki:ticket:close').setLabel('🔒 Đóng ticket').setStyle(ButtonStyle.Danger));
-    await ticket.send({ content: member.toString() + ' · đội ngũ hỗ trợ sẽ phản hồi tại đây.', embeds: [new EmbedBuilder().setColor(0x57F287).setTitle('🎫 Ticket đã mở').setDescription('Mô tả yêu cầu của bạn và chờ staff. Chỉ bạn, bot và đội ngũ được cấp quyền mới xem được kênh này.')], components: [closeRow], allowedMentions: { users: [member.id] } });
-    await interaction.reply({ content: '✅ Ticket của bạn đã được tạo: ' + ticket.toString(), ephemeral: true });
-    await addActivity(guild.id, member.id, 'ticket:created', 'Đã mở #' + ticket.name + '.').catch(() => {});
+    const staffRoleNames = new Set(['👑 Admin', '🛡️ Moderator', '🧾 Trade Moderator', '🆘 Support']);
+    const isStaff = member.permissions.has(PermissionFlagsBits.ManageChannels) || member.permissions.has(PermissionFlagsBits.ManageGuild) ||
+      member.roles.cache.some(role => staffRoleNames.has(role.name));
+    if (!isStaff) { await interaction.reply({ content: 'Chỉ staff được cấp quyền mới nhận xử lý ticket.', ephemeral: true }); return true; }
+    const claimedBy = String(channel.topic || '').match(/(?:^|;)aki-ticket-claimed-by=(\d{17,20})(?:;|$)/)?.[1];
+    if (claimedBy && claimedBy !== member.id) {
+      await interaction.reply({ content: 'Ticket đã được nhận bởi <@' + claimedBy + '>.', ephemeral: true, allowedMentions: { parse: [] } }); return true;
+    }
+    if (!claimedBy) await channel.setTopic((String(channel.topic || '') + ';aki-ticket-claimed-by=' + member.id).slice(0, 1024));
+    await interaction.reply({ content: '✅ Bạn đã nhận xử lý ticket này.', ephemeral: true });
+    await channel.send({ content: '🙋 Ticket được nhận xử lý bởi <@' + member.id + '>.', allowedMentions: { parse: [] } });
+    await addActivity(guild.id, member.id, 'ticket:claimed', 'Đã nhận xử lý #' + channel.name + '.').catch(() => {});
     return true;
   }
   if (customId === 'aki:ticket:close') {
@@ -1907,7 +1987,15 @@ bot.on('ready', async () => {
     const cfg = await getConfig(guild.id);
     if (cfg.auto_voice_enabled && cfg.auto_voice_channel_id) joinGuildVoice(guild, cfg.auto_voice_channel_id, 'auto').catch(e => console.error(`Auto voice ${guild.id}:`, e.message));
   }
-  io.emit('bot-status', { type: 'ready', user: { id: bot.user.id, tag: bot.user.tag }, guilds: bot.guilds.cache.size });
+  for (const guild of bot.guilds.cache.values()) {
+    io.to('guild:' + guild.id).emit('bot-status', {
+      type: 'ready',
+      guildId: guild.id,
+      guildName: guild.name,
+      user: { id: bot.user.id, tag: bot.user.tag },
+      guildCount: bot.guilds.cache.size
+    });
+  }
 });
 
 async function addPollReactions(message, count) {
@@ -1977,6 +2065,15 @@ bot.on('messageReactionAdd', (reaction, user) => applyReactionRole(reaction, use
 bot.on('messageReactionRemove', (reaction, user) => applyReactionRole(reaction, user, false));
 
 bot.on('interactionCreate', async interaction => {
+  if (interaction.isModalSubmit()) {
+    try { if (await handleAkiModalSubmit(interaction)) return; }
+    catch (error) {
+      const message = '⚠️ ' + String(error.message || 'Không thể tạo ticket.');
+      if (interaction.replied || interaction.deferred) await interaction.followUp({ content: message, ephemeral: true }).catch(() => {});
+      else await interaction.reply({ content: message, ephemeral: true }).catch(() => {});
+      if (interaction.guildId) addActivity(interaction.guildId, interaction.user.id, 'error:ticket-modal', error.message).catch(() => {});
+    }
+  }
   if (interaction.isButton()) {
     try { if (await handleAkiButton(interaction)) return; }
     catch (error) {

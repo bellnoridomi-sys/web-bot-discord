@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan } from '../lib/role-utils.js';
 import { isAllowedOrigin } from '../lib/security-utils.js';
-import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS } from '../lib/ticket-utils.js';
+import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from '../lib/ticket-utils.js';
 import { normalizeMediaUrl } from '../lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from '../lib/community-utils.js';
 
@@ -134,4 +134,12 @@ test('parses human reminder durations and keeps numeric-second compatibility', (
   assert.throws(() => parseDuration('2w'), /dạng 30m/);
   assert.throws(() => parseDuration('1s'), /từ 5/);
   assert.throws(() => parseDuration('8d'), /từ 5/);
+});
+
+test('ticket type selection rejects arbitrary values and maps safe labels', () => {
+  assert.equal(normalizeTicketType('support'), 'support');
+  assert.equal(normalizeTicketType('middleman'), 'middleman');
+  assert.equal(normalizeTicketType('scam-report'), 'scam-report');
+  assert.equal(normalizeTicketType('owner-admin'), null);
+  assert.equal(ticketTypeLabel('scam-report'), 'Báo cáo scam');
 });
