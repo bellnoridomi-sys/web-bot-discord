@@ -18,6 +18,7 @@ import { parsePagination, csvCell } from './lib/activity-utils.js';
 import { isAccountTooNew } from './lib/verification-utils.js';
 import { drawUniqueWinners } from './lib/giveaway-utils.js';
 import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from './lib/suggestion-utils.js';
+import { SHOP_ITEMS, getShopItem, isSafeShopRole } from './lib/shop-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
@@ -1114,7 +1115,12 @@ const slashCommands = [
     .addStringOption(o => o.setName('giveaway_id').setDescription('ID giveaway').setMinLength(1).setMaxLength(20).setRequired(true)),
   new SlashCommandBuilder().setName('suggest').setDescription('Đề xuất ý tưởng cho server.').addStringOption(o => o.setName('text').setDescription('Nội dung góp ý').setMinLength(5).setMaxLength(1500).setRequired(true)),
   new SlashCommandBuilder().setName('suggest-setup').setDescription('Chọn kênh đăng góp ý.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
-    .addChannelOption(o => o.setName('channel').setDescription('Kênh nhận góp ý').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
+    .addChannelOption(o => o.setName('channel').setDescription('Kênh nhận góp ý').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true)),
+  new SlashCommandBuilder().setName('shop').setDescription('Xem cửa hàng role bằng xu.'),
+  new SlashCommandBuilder().setName('buy').setDescription('Mua role trang trí bằng xu.')
+    .addStringOption(o => o.setName('item').setDescription('Mã món hàng').setRequired(true)
+      .addChoices(...SHOP_ITEMS.map(item => ({ name: item.id + ' · ' + item.price + ' xu', value: item.id })))
+    )
 ].map(c => c.toJSON());
 const contextMenuCommands = [
   new ContextMenuCommandBuilder().setName('Userinfo').setType(ApplicationCommandType.User),
@@ -1127,7 +1133,7 @@ const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Đặt lời nhắc 30m / 2h / 1d'], ['reminders', 'Lời nhắc đang chờ'], ['reminder-cancel', 'Huỷ lời nhắc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
-  ['verify-setup', 'Cổng xác minh / role cách ly'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
+  ['verify-setup', 'Cổng xác minh / role cách ly'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
@@ -1992,6 +1998,33 @@ async function syncSuggestionMessage(suggestion) {
   if (!message) return;
   await message.edit({ embeds: [await suggestionEmbed(suggestion)], components: suggestionComponents(suggestion), allowedMentions: { parse: [] } });
 }
+async function spendCommunityCoins(guildId, userId, amount) {
+  const price = Math.max(0, Math.floor(Number(amount) || 0));
+  if (price <= 0) return false;
+  await ensureCommunityProfile(guildId, userId);
+  if (pool) {
+    const result = await dbQuery(
+      'UPDATE community_profiles SET coins=coins-$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3 AND coins >= $1 RETURNING coins',
+      [price, guildId, userId]
+    );
+    return result.rowCount ? Number(result.rows[0].coins) : null;
+  }
+  const profile = await ensureCommunityProfile(guildId, userId);
+  if (Number(profile.coins) < price) return null;
+  profile.coins = Number(profile.coins) - price;
+  return profile.coins;
+}
+async function refundCommunityCoins(guildId, userId, amount) {
+  const price = Math.max(0, Math.floor(Number(amount) || 0));
+  if (!price) return;
+  await ensureCommunityProfile(guildId, userId);
+  if (pool) {
+    await dbQuery('UPDATE community_profiles SET coins=coins+$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3', [price, guildId, userId]);
+    return;
+  }
+  const profile = await ensureCommunityProfile(guildId, userId);
+  profile.coins = Number(profile.coins || 0) + price;
+}
 async function runCommand(name, ctx) {
   const { guild, userId, channel, args = {}, source = 'discord' } = ctx;
   const user = await fetchGuildMember(guild, userId);
@@ -2351,6 +2384,31 @@ async function runCommand(name, ctx) {
       await addActivity(guild.id, userId, name, '#' + targetChannel.name);
       return reply((name === 'welcome-setup' ? '👋 Kênh chào mừng' : '👋 Kênh tạm biệt') + ' đã được đặt thành <#' + targetChannel.id + '>.');
     }
+    case 'shop': {
+      const profile = await ensureCommunityProfile(guild.id, userId);
+      const rows = SHOP_ITEMS.map(item => '**' + item.id + '** · ' + item.roleName + ' · **' + item.price + ' xu**\n' + item.description).join('\n\n');
+      return embedPayload(new EmbedBuilder().setColor(0xFEE75C).setTitle('🛒 Cửa hàng Aki · Xu của bạn: ' + Number(profile.coins || 0).toLocaleString('vi-VN'))
+        .setDescription(rows).setFooter({ text: 'Mua bằng /buy item · Role shop chỉ có permission 0.' }).setTimestamp());
+    }
+    case 'buy': {
+      if (!user) throw new Error('Bạn phải là thành viên trong server để mua role.');
+      const item = getShopItem(args.item);
+      if (!item) throw new Error('Mã hàng không hợp lệ. Dùng /shop để xem danh sách.');
+      const role = guild.roles.cache.find(candidate => candidate.name === item.roleName);
+      const me = guild.members.me || await guild.members.fetchMe();
+      if (!isSafeShopRole(role, guild.id, me.roles.highest.position)) throw new Error('Role shop chưa tồn tại, có permission, do integration quản lý hoặc nằm trên/ngang role bot.');
+      if (user.roles.cache.has(role.id)) throw new Error('Bạn đã có role ' + role.name + ' rồi.');
+      const remaining = await spendCommunityCoins(guild.id, userId, item.price);
+      if (remaining === null) throw new Error('Bạn không đủ xu. Giá món này là ' + item.price + ' xu.');
+      try {
+        await user.roles.add(role, 'Aki Community Shop purchase ' + item.id);
+      } catch (error) {
+        await refundCommunityCoins(guild.id, userId, item.price).catch(() => {});
+        throw error;
+      }
+      await addActivity(guild.id, userId, 'shop:purchase', 'Đã mua ' + item.id + ' với ' + item.price + ' xu.').catch(() => {});
+      return reply('✅ Đã mua role ' + role.name + ' với **' + item.price + ' xu**. Số dư còn **' + remaining.toLocaleString('vi-VN') + ' xu**.');
+    }
     case 'suggest-setup': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
       const targetChannel = args.channel ? await guild.channels.fetch(args.channel).catch(() => null) : null;
@@ -2684,7 +2742,7 @@ bot.on('interactionCreate', async interaction => {
     }
   }
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
-  const ephemeralCommands = new Set(['suggest', 'suggest-setup', 'giveaway', 'giveaway-reroll', 'remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
+  const ephemeralCommands = new Set(['shop', 'buy', 'suggest', 'suggest-setup', 'giveaway', 'giveaway-reroll', 'remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
   try {
     const args = extractInteractionArgs(interaction);
     if (interaction.commandName === 'poll') {
@@ -2770,10 +2828,10 @@ bot.on('messageCreate', async message => {
     const [name, ...parts] = message.content.slice(prefix.length).trim().split(/\s+/);
     if (!name || !commands.some(c => c.name === name)) return;
     const basicMap = {
-      ping: {}, help: {}, server: {}, botinfo: {}, coinflip: {},
+      ping: {}, help: {}, server: {}, botinfo: {}, shop: {}, coinflip: {},
       '8ball': { question: parts.join(' ') }, roll: { sides: Number(parts[0]) || 6 }, remind: { duration: parts[0], text: parts.slice(1).join(' ') },
       announce: { message: parts.join(' ') }, clear: { amount: Number(parts[0]) }, slowmode: { seconds: Number(parts[0]) }, lock: {}, unlock: {},
-      rank: {}, balance: {}, daily: {}, work: {}, leaderboard: { kind: parts[0] === 'coins' ? 'coins' : 'levels' },
+      rank: {}, balance: {}, daily: {}, work: {}, buy: { item: parts[0] }, leaderboard: { kind: parts[0] === 'coins' ? 'coins' : 'levels' },
       reminders: {}, 'reminder-cancel': { reminderId: Number(parts[0]) },
       'vc-leave': {}
     };

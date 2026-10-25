@@ -130,6 +130,7 @@ import { parsePagination, csvCell } from '../lib/activity-utils.js';
 import { isAccountTooNew } from '../lib/verification-utils.js';
 import { drawUniqueWinners } from '../lib/giveaway-utils.js';
 import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from '../lib/suggestion-utils.js';
+import { SHOP_ITEMS, getShopItem, isSafeShopRole } from '../lib/shop-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
   assert.equal(parseDuration('2h'), 7200);
@@ -203,4 +204,19 @@ test('suggestion state only allows valid votes and pending-to-review transitions
   assert.equal(canReviewSuggestion('pending','approved'), true);
   assert.equal(canReviewSuggestion('pending','rejected'), true);
   assert.equal(canReviewSuggestion('approved','rejected'), false);
+});
+
+test('shop catalog uses positive prices and normalized item IDs', () => {
+  assert.ok(SHOP_ITEMS.length >= 4);
+  assert.equal(getShopItem('VIP')?.id, 'vip');
+  assert.equal(getShopItem('not-a-real-item'), null);
+  assert.ok(SHOP_ITEMS.every(item => Number.isInteger(item.price) && item.price > 0));
+});
+test('shop sells only unmanaged no-permission roles below bot', () => {
+  const role = { id: '22', position: 2, managed: false, permissions: { bitfield: 0n } };
+  assert.equal(isSafeShopRole(role, '1', 3), true);
+  assert.equal(isSafeShopRole({ ...role, managed: true }, '1', 3), false);
+  assert.equal(isSafeShopRole({ ...role, permissions: { bitfield: 8n } }, '1', 3), false);
+  assert.equal(isSafeShopRole(role, '22', 3), false);
+  assert.equal(isSafeShopRole({ ...role, position: 3 }, '1', 3), false);
 });
