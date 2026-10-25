@@ -114,3 +114,8 @@ Use /temp-voice-setup with enabled=true, a trigger voice channel, and an optiona
 ### Tags and FAQ auto replies
 
 Manage Server staff can use /tag-set and /tag-delete for reusable server snippets, and /faq-set /faq-delete for keyword-based auto replies. Members call /tag name or use the configured prefix. FAQ rules are cached per server, matching the longest keyword first, with a 15-second per-member/per-keyword cooldown. Tag/FAQ content neutralizes user, role and mass mentions.
+
+
+### Shared command cooldown and presence
+
+All slash, prefix and dashboard commands share a per-user/per-server/per-command cooldown. Configure `COMMAND_COOLDOWN_MS` (default 1200; set 0 to disable), plus `BOT_PRESENCE_TEXT`, `BOT_PRESENCE_TYPE` (`Playing`, `Watching`, `Listening`, or `Competing`) and `BOT_PRESENCE_STATUS` (`online`, `idle`, `dnd`, or `invisible`). The `/tag`, `/tag-delete`, `/faq-delete` and `/giveaway-reroll` options use server-scoped autocomplete; moderation-only choices are not returned to ordinary members.

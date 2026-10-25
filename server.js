@@ -27,6 +27,7 @@ import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from './lib/temp-
 import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMatchingFaq } from './lib/tag-utils.js';
 import { normalizePage, slicePage } from './lib/page-utils.js';
 import { keepsCommandResultPrivate, summarizeCommandResult } from './lib/command-routing-utils.js';
+import { checkCommandCooldown, normalizeAutocompleteChoices } from './lib/ux-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -50,7 +51,8 @@ import {
   Routes,
   SlashCommandBuilder,
   ContextMenuCommandBuilder,
-  ApplicationCommandType
+  ApplicationCommandType,
+  ActivityType
 } from 'discord.js';
 import {
   joinVoiceChannel,
@@ -97,6 +99,11 @@ const oauthStateStore = new Map();
 const activityCache = [];
 const xpCooldowns = new Map();
 const runtimeErrorCooldowns = new Map();
+const commandCooldowns = new Map();
+const COMMAND_COOLDOWN_MS = (() => {
+  const parsed = Number(process.env.COMMAND_COOLDOWN_MS ?? 1200);
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(10000, Math.floor(parsed))) : 1200;
+})();
 const automodMessageBuckets = new Map();
 const raidJoinBuckets = new Map();
 const raidLockdowns = new Map();
@@ -1327,7 +1334,7 @@ const slashCommands = [
     .addRoleOption(o => o.setName('required_role').setDescription('Role bắt buộc (tuỳ chọn)').setRequired(false))
     .addIntegerOption(o => o.setName('required_level').setDescription('Level tối thiểu (tuỳ chọn)').setMinValue(0).setMaxValue(1000).setRequired(false)),
   new SlashCommandBuilder().setName('giveaway-reroll').setDescription('Chọn lại người thắng giveaway đã kết thúc.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
-    .addStringOption(o => o.setName('giveaway_id').setDescription('ID giveaway').setMinLength(1).setMaxLength(20).setRequired(true)),
+    .addStringOption(o => o.setName('giveaway_id').setDescription('ID giveaway').setMinLength(1).setMaxLength(20).setAutocomplete(true).setRequired(true)),
   new SlashCommandBuilder().setName('suggest').setDescription('Đề xuất ý tưởng cho server.').addStringOption(o => o.setName('text').setDescription('Nội dung góp ý').setMinLength(5).setMaxLength(1500).setRequired(true)),
   new SlashCommandBuilder().setName('suggest-setup').setDescription('Chọn kênh đăng góp ý.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
     .addChannelOption(o => o.setName('channel').setDescription('Kênh nhận góp ý').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true)),
@@ -1345,17 +1352,17 @@ const slashCommands = [
     .addChannelOption(o => o.setName('trigger_channel').setDescription('Kênh voice người dùng vào để tạo phòng').addChannelTypes(ChannelType.GuildVoice).setRequired(false))
     .addChannelOption(o => o.setName('category').setDescription('Category chứa phòng mới (tuỳ chọn)').addChannelTypes(ChannelType.GuildCategory).setRequired(false))
     .addIntegerOption(o => o.setName('user_limit').setDescription('Giới hạn người trong phòng, 0 = không giới hạn').setMinValue(0).setMaxValue(99).setRequired(false)),
-  new SlashCommandBuilder().setName('tag').setDescription('Hiển thị tag của server.').addStringOption(o => o.setName('name').setDescription('Tên tag').setMinLength(2).setMaxLength(32).setRequired(true)),
+  new SlashCommandBuilder().setName('tag').setDescription('Hiển thị tag của server.').addStringOption(o => o.setName('name').setDescription('Tên tag').setMinLength(2).setMaxLength(32).setAutocomplete(true).setRequired(true)),
   new SlashCommandBuilder().setName('tag-set').setDescription('Tạo hoặc cập nhật tag cho server.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
     .addStringOption(o => o.setName('name').setDescription('Tên tag').setMinLength(2).setMaxLength(32).setRequired(true))
     .addStringOption(o => o.setName('content').setDescription('Nội dung tag').setMinLength(1).setMaxLength(1500).setRequired(true)),
   new SlashCommandBuilder().setName('tag-delete').setDescription('Xoá tag khỏi server.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
-    .addStringOption(o => o.setName('name').setDescription('Tên tag').setMinLength(2).setMaxLength(32).setRequired(true)),
+    .addStringOption(o => o.setName('name').setDescription('Tên tag').setMinLength(2).setMaxLength(32).setAutocomplete(true).setRequired(true)),
   new SlashCommandBuilder().setName('faq-set').setDescription('Thêm/cập nhật FAQ auto-reply.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
     .addStringOption(o => o.setName('keyword').setDescription('Từ hoặc cụm từ cần bắt').setMinLength(2).setMaxLength(60).setRequired(true))
     .addStringOption(o => o.setName('response').setDescription('Câu trả lời').setMinLength(1).setMaxLength(1500).setRequired(true)),
   new SlashCommandBuilder().setName('faq-delete').setDescription('Xoá FAQ auto-reply.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
-    .addStringOption(o => o.setName('keyword').setDescription('Từ khoá FAQ').setMinLength(2).setMaxLength(60).setRequired(true)),
+    .addStringOption(o => o.setName('keyword').setDescription('Từ khoá FAQ').setMinLength(2).setMaxLength(60).setAutocomplete(true).setRequired(true)),
   new SlashCommandBuilder().setName('xp-setup').setDescription('Cấu hình XP, bỏ qua kênh/role, hệ số và role thưởng.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
     .addBooleanOption(o => o.setName('enabled').setDescription('Bật/tắt XP tin nhắn').setRequired(true))
     .addStringOption(o => o.setName('ignored_channels').setDescription('ID/mention kênh bỏ qua, ngăn cách bằng dấu phẩy').setMaxLength(1000).setRequired(false))
@@ -2601,6 +2608,8 @@ async function maybeSendFaqReply(message, prefix) {
 }
 async function runCommand(name, ctx) {
   const { guild, userId, channel, args = {}, source = 'discord' } = ctx;
+  const cooldown = checkCommandCooldown(commandCooldowns, guild.id + ':' + userId + ':' + name, Date.now(), COMMAND_COOLDOWN_MS);
+  if (!cooldown.allowed) throw new Error('⏳ Chờ ' + Math.max(1, Math.ceil(cooldown.remainingMs / 1000)) + ' giây trước khi dùng lại /' + name + '.');
   const user = await fetchGuildMember(guild, userId);
   const userName = user?.displayName || ctx.userName || 'Unknown';
   const target = args.user ? await guild.members.fetch(args.user).catch(() => null) : null;
@@ -3328,6 +3337,12 @@ process.on('uncaughtException', error => {
 
 bot.on('ready', async () => {
   console.log(`Logged in as ${bot.user.tag}`);
+  const presenceStatus = ['online','idle','dnd','invisible'].includes(String(process.env.BOT_PRESENCE_STATUS || 'online').toLowerCase())
+    ? String(process.env.BOT_PRESENCE_STATUS || 'online').toLowerCase() : 'online';
+  const presenceTypes = { Playing: ActivityType.Playing, Watching: ActivityType.Watching, Listening: ActivityType.Listening, Competing: ActivityType.Competing };
+  const presenceType = presenceTypes[process.env.BOT_PRESENCE_TYPE || 'Watching'] ?? ActivityType.Watching;
+  const presenceText = String(process.env.BOT_PRESENCE_TEXT || (APP_NAME + ' · /help')).trim().slice(0,128) || (APP_NAME + ' · /help');
+  bot.user.setPresence({ status: presenceStatus, activities: [{ name: presenceText, type: presenceType }] });
   try {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     if (process.env.DISCORD_GUILD_ID) {
@@ -3427,6 +3442,14 @@ bot.on('messageReactionAdd', (reaction, user) => applyReactionRole(reaction, use
 bot.on('messageReactionRemove', (reaction, user) => applyReactionRole(reaction, user, false));
 
 bot.on('interactionCreate', async interaction => {
+  if (interaction.isAutocomplete()) {
+    try { await handleCommandAutocomplete(interaction); }
+    catch (error) {
+      await interaction.respond([]).catch(() => {});
+      await reportRuntimeError(error,'command-autocomplete',interaction.guildId).catch(() => {});
+    }
+    return;
+  }
   if (interaction.isUserContextMenuCommand() && interaction.guild) {
     try {
       if (interaction.commandName === 'Userinfo') {

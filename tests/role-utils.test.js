@@ -140,6 +140,7 @@ import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from '../lib/temp
 import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMatchingFaq } from '../lib/tag-utils.js';
 import { normalizePage, slicePage } from '../lib/page-utils.js';
 import { keepsCommandResultPrivate, summarizeCommandResult } from '../lib/command-routing-utils.js';
+import { checkCommandCooldown, normalizeAutocompleteChoices } from '../lib/ux-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, isRaidJoinBurst } from '../lib/automod-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
@@ -390,4 +391,24 @@ test('CSP websocket destination is derived from the configured site origin only'
   assert.equal(websocketOriginFromSiteUrl('http://localhost:10000'), 'ws://localhost:10000');
   assert.equal(websocketOriginFromSiteUrl('javascript:alert(1)'), null);
   assert.equal(websocketOriginFromSiteUrl('not a URL'), null);
+});
+
+test('shared command cooldown blocks repeat actions without extending the original timer', () => {
+  const cache = new Map();
+  assert.deepEqual(checkCommandCooldown(cache,'g:user:ping',1000,1200),{allowed:true,remainingMs:0});
+  assert.deepEqual(checkCommandCooldown(cache,'g:user:ping',1500,1200),{allowed:false,remainingMs:700});
+  assert.deepEqual(checkCommandCooldown(cache,'g:user:ping',2200,1200),{allowed:true,remainingMs:0});
+  assert.deepEqual(checkCommandCooldown(cache,'g:user:other',2200,1200),{allowed:true,remainingMs:0});
+  assert.deepEqual(checkCommandCooldown(cache,'g:user:ping',2250,0),{allowed:true,remainingMs:0});
+});
+test('autocomplete choices are filtered, bounded to 25 and Discord field limits', () => {
+  const choices = normalizeAutocompleteChoices([
+    {name:'trading-rules',value:'trading-rules'},
+    {name:'trade',value:'trade'},
+    {name:'other',value:'other'},
+    {name:'x'.repeat(130),value:'v'.repeat(130)}
+  ],'trad',2);
+  assert.deepEqual(choices,[{name:'trading-rules',value:'trading-rules'},{name:'trade',value:'trade'}]);
+  assert.equal(normalizeAutocompleteChoices([{name:'n'.repeat(120),value:'v'.repeat(120)}],'',25)[0].name.length,100);
+  assert.equal(normalizeAutocompleteChoices([{name:'n',value:'v'}],'no-match').length,0);
 });
