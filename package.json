@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Aki Dev — monochrome Discord bot + 3D control dashboard",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.12.0 <23.0.0"
   },
   "scripts": {
     "start": "node server.js",
