@@ -22,6 +22,7 @@ import { drawUniqueWinners } from './lib/giveaway-utils.js';
 import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from './lib/suggestion-utils.js';
 import { SHOP_ITEMS, getShopItem, isSafeShopRole } from './lib/shop-utils.js';
 import { nextDailyStreak, dailyStreakReward } from './lib/economy-utils.js';
+import { normalizeSaleSubmission, canPostSale, normalizeSaleCooldownMinutes } from './lib/sales-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -114,11 +115,14 @@ const memory = {
   giveaways: new Map(),
   giveawayEntries: new Map(),
   suggestions: new Map(),
-  suggestionVotes: new Map()
+  suggestionVotes: new Map(),
+  saleCooldowns: new Map(),
+  salePosts: []
 };
 let nextGiveawayId = 1;
 let giveawayWorkerRunning = false;
 let nextSuggestionId = 1;
+let nextSalePostId = 1;
 
 const databaseHost = (() => { try { return new URL(process.env.DATABASE_URL || '').hostname; } catch { return ''; } })();
 const pool = process.env.DATABASE_URL
@@ -187,6 +191,8 @@ async function getConfig(guildId) {
     verification_quarantine_role_id: null,
     verification_min_account_days: 0,
     suggestion_channel_id: null,
+    sale_channel_id: null,
+    sale_cooldown_minutes: 30,
     automod_enabled: false,
     automod_blocked_domains: [],
     automod_spam_threshold: 5,
@@ -208,10 +214,10 @@ async function setConfig(guildId, patch) {
         guild_id, auto_voice_enabled, auto_voice_channel_id, prefix, log_channel_id, auto_role_id,
         welcome_channel_id, goodbye_channel_id, verification_enabled, verification_channel_id,
         verification_message_id, verification_role_id, verification_quarantine_role_id,
-        verification_min_account_days, suggestion_channel_id, automod_enabled, automod_blocked_domains,
+        verification_min_account_days, suggestion_channel_id, sale_channel_id, sale_cooldown_minutes, automod_enabled, automod_blocked_domains,
         automod_spam_threshold, automod_spam_window_seconds, automod_max_mentions,
         automod_raid_join_threshold, automod_raid_window_seconds, automod_lockdown_seconds, updated_at
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,NOW())
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,NOW())
       ON CONFLICT(guild_id) DO UPDATE SET
         auto_voice_enabled=EXCLUDED.auto_voice_enabled,
         auto_voice_channel_id=EXCLUDED.auto_voice_channel_id,
@@ -227,6 +233,8 @@ async function setConfig(guildId, patch) {
         verification_quarantine_role_id=EXCLUDED.verification_quarantine_role_id,
         verification_min_account_days=EXCLUDED.verification_min_account_days,
         suggestion_channel_id=EXCLUDED.suggestion_channel_id,
+        sale_channel_id=EXCLUDED.sale_channel_id,
+        sale_cooldown_minutes=EXCLUDED.sale_cooldown_minutes,
         automod_enabled=EXCLUDED.automod_enabled,
         automod_blocked_domains=EXCLUDED.automod_blocked_domains,
         automod_spam_threshold=EXCLUDED.automod_spam_threshold,
@@ -244,6 +252,7 @@ async function setConfig(guildId, patch) {
       next.verification_message_id || null, next.verification_role_id || null,
       next.verification_quarantine_role_id || null, Math.min(365, Math.max(0, Number(next.verification_min_account_days) || 0)),
       next.suggestion_channel_id || null,
+      next.sale_channel_id || null, normalizeSaleCooldownMinutes(next.sale_cooldown_minutes),
       Boolean(next.automod_enabled), normalizeBlockedDomains(next.automod_blocked_domains || []),
       Math.max(3, Math.min(20, Number(next.automod_spam_threshold) || 5)),
       Math.max(3, Math.min(60, Number(next.automod_spam_window_seconds) || 10)),
@@ -1245,6 +1254,10 @@ const slashCommands = [
     .addStringOption(o => o.setName('item').setDescription('Mã món hàng').setRequired(true)
       .addChoices(...SHOP_ITEMS.map(item => ({ name: item.id + ' · ' + item.price + ' xu', value: item.id })))
     ),
+  new SlashCommandBuilder().setName('sell').setDescription('Mở modal đăng bán sản phẩm/dịch vụ.'),
+  new SlashCommandBuilder().setName('sell-setup').setDescription('Cấu hình kênh đăng bán và cooldown.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+    .addChannelOption(o => o.setName('channel').setDescription('Kênh đăng bán').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
+    .addIntegerOption(o => o.setName('cooldown_minutes').setDescription('Cooldown mỗi người (5–1440 phút)').setMinValue(5).setMaxValue(1440).setRequired(false)),
   new SlashCommandBuilder().setName('xp-setup').setDescription('Cấu hình XP, bỏ qua kênh/role, hệ số và role thưởng.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
     .addBooleanOption(o => o.setName('enabled').setDescription('Bật/tắt XP tin nhắn').setRequired(true))
     .addStringOption(o => o.setName('ignored_channels').setDescription('ID/mention kênh bỏ qua, ngăn cách bằng dấu phẩy').setMaxLength(1000).setRequired(false))
@@ -1272,7 +1285,7 @@ const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Đặt lời nhắc 30m / 2h / 1d'], ['reminders', 'Lời nhắc đang chờ'], ['reminder-cancel', 'Huỷ lời nhắc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
-  ['verify-setup', 'Cổng xác minh / role cách ly'], ['xp-setup', 'Cấu hình XP và role thưởng'], ['automod-setup', 'Cấu hình AutoMod/raid'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['automod-setup', 'Chống spam/mass mention/raid'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
+  ['verify-setup', 'Cổng xác minh / role cách ly'], ['xp-setup', 'Cấu hình XP và role thưởng'], ['automod-setup', 'Cấu hình AutoMod/raid'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['sell', 'Mở form đăng bán'], ['sell-setup', 'Cấu hình kênh đăng bán'], ['automod-setup', 'Chống spam/mass mention/raid'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
@@ -1618,6 +1631,62 @@ async function sendTicketTranscript(channel, ownerId, closedBy) {
 }
 
 async function handleAkiModalSubmit(interaction) {
+  if (interaction.customId === 'aki:sell:submit' && interaction.guild) {
+    await interaction.deferReply({ ephemeral: true });
+    const guild = interaction.guild;
+    const seller = await guild.members.fetch(interaction.user.id);
+    const listing = normalizeSaleSubmission({
+      title: interaction.fields.getTextInputValue('title'),
+      price: interaction.fields.getTextInputValue('price'),
+      description: interaction.fields.getTextInputValue('description'),
+      contact: interaction.fields.getTextInputValue('contact')
+    });
+    const config = await getConfig(guild.id);
+    const channel = config.sale_channel_id ? await guild.channels.fetch(config.sale_channel_id).catch(() => null) : null;
+    if (!channel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type) || channel.guild?.id !== guild.id) {
+      await interaction.editReply({ content: 'Kênh đăng bán chưa cấu hình. Hãy báo staff dùng /sell-setup.' });
+      return true;
+    }
+    const me = guild.members.me || await guild.members.fetchMe();
+    if (!channel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+      await interaction.editReply({ content: 'Bot thiếu quyền đăng embed trong kênh đăng bán. Hãy báo staff.' });
+      return true;
+    }
+    const cooldown = normalizeSaleCooldownMinutes(config.sale_cooldown_minutes);
+    const reservation = await reserveSaleCooldown(guild.id, seller.id, cooldown);
+    if (!reservation.allowed) {
+      await interaction.editReply({ content: '⏳ Bạn đã đăng bài gần đây. Có thể đăng bài tiếp sau <t:' + Math.ceil(reservation.nextAt / 1000) + ':R>.' });
+      return true;
+    }
+    let saleId = null;
+    let sent = null;
+    try {
+      saleId = await createSaleRecord({
+        guild_id: guild.id, channel_id: channel.id, seller_id: seller.id,
+        title: listing.title, price: listing.price, description: listing.description, contact: listing.contact
+      });
+      const embed = new EmbedBuilder().setColor(0x5865F2).setTitle('🛍️ ' + listing.title)
+        .setDescription(listing.description)
+        .addFields(
+          { name: '💰 Giá', value: listing.price.slice(0, 80), inline: true },
+          { name: '👤 Người bán', value: '<@' + seller.id + '>', inline: true }
+        )
+        .setThumbnail(seller.user.displayAvatarURL({ size: 128 }))
+        .setFooter({ text: 'Aki Market · Bài đăng #' + saleId })
+        .setTimestamp();
+      if (listing.contact) embed.addFields({ name: '📨 Liên hệ', value: listing.contact.slice(0, 120), inline: false });
+      sent = await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+      await setSaleMessageId(saleId, sent.id);
+      await addActivity(guild.id, seller.id, 'sales:posted', 'Đã đăng bài #' + saleId + ' · ' + listing.title + ' tại #' + channel.name + '.').catch(() => {});
+      await interaction.editReply({ content: '✅ Đã đăng bài #' + saleId + ' tại <#' + channel.id + '>: ' + sent.url });
+    } catch (error) {
+      if (sent) await sent.delete().catch(() => {});
+      if (saleId !== null) await deleteSaleRecord(saleId).catch(() => {});
+      await releaseSaleCooldown(guild.id, seller.id, reservation.reservedAt).catch(() => {});
+      throw error;
+    }
+    return true;
+  }
   const contextMatch = String(interaction.customId || '').match(/^aki:context:(warn|report):(\d{17,20})$/);
   if (contextMatch && interaction.guild) {
     await interaction.deferReply({ ephemeral: true });
@@ -2168,6 +2237,74 @@ async function refundCommunityCoins(guildId, userId, amount) {
   const profile = await ensureCommunityProfile(guildId, userId);
   profile.coins = Number(profile.coins || 0) + price;
 }
+
+async function reserveSaleCooldown(guildId, userId, cooldownMinutes) {
+  const now = Date.now();
+  const minutes = normalizeSaleCooldownMinutes(cooldownMinutes);
+  if (pool) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [guildId + ':' + userId + ':sale']);
+      const result = await client.query('SELECT last_post_at FROM sale_post_cooldowns WHERE guild_id=$1 AND user_id=$2 FOR UPDATE', [guildId,userId]);
+      const last = Number(result.rows[0]?.last_post_at) || 0;
+      const policy = canPostSale(last, now, minutes);
+      if (!policy.allowed) {
+        await client.query('ROLLBACK');
+        return { allowed: false, nextAt: policy.nextAt };
+      }
+      await client.query(
+        'INSERT INTO sale_post_cooldowns(guild_id,user_id,last_post_at) VALUES($1,$2,$3) ON CONFLICT(guild_id,user_id) DO UPDATE SET last_post_at=EXCLUDED.last_post_at',
+        [guildId,userId,now]
+      );
+      await client.query('COMMIT');
+      return { allowed: true, reservedAt: now, nextAt: now + minutes * 60_000 };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally { client.release(); }
+  }
+  const key = guildId + ':' + userId;
+  const policy = canPostSale(memory.saleCooldowns.get(key), now, minutes);
+  if (!policy.allowed) return { allowed: false, nextAt: policy.nextAt };
+  memory.saleCooldowns.set(key, now);
+  return { allowed: true, reservedAt: now, nextAt: now + minutes * 60_000 };
+}
+async function releaseSaleCooldown(guildId, userId, reservedAt) {
+  if (pool) {
+    await dbQuery('DELETE FROM sale_post_cooldowns WHERE guild_id=$1 AND user_id=$2 AND last_post_at=$3', [guildId,userId,reservedAt]);
+    return;
+  }
+  const key = guildId + ':' + userId;
+  if (memory.saleCooldowns.get(key) === reservedAt) memory.saleCooldowns.delete(key);
+}
+async function createSaleRecord(data) {
+  if (pool) {
+    const result = await dbQuery(
+      'INSERT INTO sale_posts(guild_id,channel_id,seller_id,title,price,description,contact) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+      [data.guild_id,data.channel_id,data.seller_id,data.title,data.price,data.description,data.contact || null]
+    );
+    return String(result.rows[0].id);
+  }
+  const id = String(nextSalePostId++);
+  memory.salePosts.push({ id, ...data, message_id: null, created_at: new Date().toISOString() });
+  return id;
+}
+async function setSaleMessageId(saleId, messageId) {
+  if (pool) {
+    await dbQuery('UPDATE sale_posts SET message_id=$1 WHERE id=$2', [messageId,saleId]);
+    return;
+  }
+  const item = memory.salePosts.find(row => String(row.id) === String(saleId));
+  if (item) item.message_id = messageId;
+}
+async function deleteSaleRecord(saleId) {
+  if (pool) {
+    await dbQuery('DELETE FROM sale_posts WHERE id=$1', [saleId]);
+    return;
+  }
+  memory.salePosts = memory.salePosts.filter(row => String(row.id) !== String(saleId));
+}
 async function runCommand(name, ctx) {
   const { guild, userId, channel, args = {}, source = 'discord' } = ctx;
   const user = await fetchGuildMember(guild, userId);
@@ -2581,6 +2718,17 @@ async function runCommand(name, ctx) {
           : '';
       return reply((enabled ? '🛡️ AutoMod đã bật.' : 'AutoMod đã tắt.') + ' Domain đang chặn: ' + (domains.join(', ') || 'chưa cấu hình') + '.' + raidNote);
     }
+    case 'sell-setup': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      const targetChannel = args.channel ? await guild.channels.fetch(args.channel).catch(() => null) : null;
+      if (!targetChannel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(targetChannel.type) || targetChannel.guild?.id !== guild.id) throw new Error('Chọn kênh text thuộc đúng server.');
+      const cooldown = normalizeSaleCooldownMinutes(args.cooldownMinutes ?? 30);
+      const me = guild.members.me || await guild.members.fetchMe();
+      if (!targetChannel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) throw new Error('Bot cần View Channel, Send Messages và Embed Links trong kênh đăng bán.');
+      await setConfig(guild.id, { sale_channel_id: targetChannel.id, sale_cooldown_minutes: cooldown });
+      await addActivity(guild.id, userId, 'sales:setup', 'Đặt kênh đăng bán #' + targetChannel.name + ' · cooldown ' + cooldown + ' phút.');
+      return reply('🛍️ Đã cấu hình kênh đăng bán thành <#' + targetChannel.id + '> với cooldown ' + cooldown + ' phút.');
+    }
     case 'shop': {
       const profile = await ensureCommunityProfile(guild.id, userId);
       const rows = SHOP_ITEMS.map(item => '**' + item.id + '** · ' + item.roleName + ' · **' + item.price + ' xu**\n' + item.description).join('\n\n');
@@ -2794,6 +2942,10 @@ function extractInteractionArgs(interaction) {
     out.raidWindowSeconds = interaction.options.getInteger('raid_window_seconds') ?? undefined;
     out.lockdownSeconds = interaction.options.getInteger('lockdown_seconds') ?? undefined;
   }
+  if (interaction.commandName === 'sell-setup') {
+    out.channel = interaction.options.getChannel('channel')?.id;
+    out.cooldownMinutes = interaction.options.getInteger('cooldown_minutes');
+  }
   if (interaction.commandName === 'verify-setup') {
     out.enabled = interaction.options.getBoolean('enabled');
     out.verifyRole = interaction.options.getRole('member_role')?.id;
@@ -2958,7 +3110,18 @@ bot.on('interactionCreate', async interaction => {
     }
   }
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
-  const ephemeralCommands = new Set(['xp-setup', 'automod-setup', 'shop', 'buy', 'suggest', 'suggest-setup', 'giveaway', 'giveaway-reroll', 'remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
+  if (interaction.commandName === 'sell') {
+    const modal = new ModalBuilder().setCustomId('aki:sell:submit').setTitle('🛍️ Đăng bán sản phẩm/dịch vụ');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('title').setLabel('Tiêu đề').setStyle(TextInputStyle.Short).setMinLength(3).setMaxLength(100).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('price').setLabel('Giá / thương lượng').setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('description').setLabel('Mô tả chi tiết').setStyle(TextInputStyle.Paragraph).setMinLength(10).setMaxLength(1600).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('contact').setLabel('Thông tin liên hệ (tuỳ chọn)').setStyle(TextInputStyle.Short).setMaxLength(120).setRequired(false))
+    );
+    await interaction.showModal(modal);
+    return;
+  }
+  const ephemeralCommands = new Set(['sell-setup', 'xp-setup', 'automod-setup', 'shop', 'buy', 'suggest', 'suggest-setup', 'giveaway', 'giveaway-reroll', 'remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
   try {
     const args = extractInteractionArgs(interaction);
     if (interaction.commandName === 'poll') {
@@ -3347,7 +3510,7 @@ bot.on('voiceStateUpdate', async (oldState, newState) => {
 
 app.get('/api/commands', (_req, res) => {
   res.set('Cache-Control', 'public, max-age=300');
-  res.json({ commands: commands.filter(command => !command.type || command.type === ApplicationCommandType.ChatInput).map(command => ({
+  res.json({ commands: commands.filter(command => (!command.type || command.type === ApplicationCommandType.ChatInput) && command.name !== 'sell').map(command => ({
     name: command.name,
     description: command.description || '',
     options: Array.isArray(command.options) ? command.options : [],
@@ -3678,7 +3841,7 @@ app.post('/api/guilds/:guildId/command', requireAuth, async (req, res) => {
   try {
     const { guild } = await requireGuildControl(req, res);
     const name = String(req.body?.name || '').toLowerCase().replace(/^\//, '');
-    if (!commands.some(c => c.name === name)) return res.status(400).json({ error: 'UNKNOWN_COMMAND' });
+    if (!commands.some(c => c.name === name) || name === 'sell') return res.status(400).json({ error: name === 'sell' ? 'MODAL_COMMAND_DISCORD_ONLY' : 'UNKNOWN_COMMAND' });
     const channel = req.body?.channelId ? await guild.channels.fetch(req.body.channelId).catch(() => null) : guild.channels.cache.find(c => c.isTextBased() && c.type !== ChannelType.GuildVoice);
     const args = req.body?.args || {};
     const actorId = discordActorId(req.session);

@@ -134,6 +134,7 @@ import { drawUniqueWinners } from '../lib/giveaway-utils.js';
 import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from '../lib/suggestion-utils.js';
 import { SHOP_ITEMS, getShopItem, isSafeShopRole } from '../lib/shop-utils.js';
 import { nextDailyStreak, dailyStreakReward, UTC_DAY_MS } from '../lib/economy-utils.js';
+import { normalizeSaleSubmission, canPostSale, normalizeSaleCooldownMinutes } from '../lib/sales-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, isRaidJoinBurst } from '../lib/automod-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
@@ -300,4 +301,23 @@ test('migration runner recognizes numbered SQL migrations and rejects unrelated 
   assert.equal(isMigrationFilename('backup.sql'), false);
   assert.equal(isMigrationFilename('../001_initial.sql'), false);
   assert.equal(isMigrationFilename('folder/001_initial.sql'), false);
+});
+
+test('sale submission trims fields, escapes mentions, and validates required data', () => {
+  const listing = normalizeSaleSubmission({
+    title: '  Game account  ', price: '  100k  ',
+    description: 'Includes the items shown <@&123456789012345678>',
+    contact: 'DM me'
+  });
+  assert.equal(listing.title, 'Game account');
+  assert.equal(listing.price, '100k');
+  assert.equal(listing.description.includes('<@&123456789012345678>'), false);
+  assert.throws(() => normalizeSaleSubmission({ title: 'x', price: '', description: 'short' }), /Tiêu đề/);
+});
+test('sale cooldown blocks concurrent repeat posts until configured expiry', () => {
+  assert.deepEqual(canPostSale(0, 1000, 30), { allowed: true, nextAt: 1000 });
+  assert.deepEqual(canPostSale(1000, 1000 + 29 * 60000, 30), { allowed: false, nextAt: 1000 + 30 * 60000 });
+  assert.deepEqual(canPostSale(1000, 1000 + 30 * 60000, 30), { allowed: true, nextAt: 1000 + 30 * 60000 });
+  assert.equal(normalizeSaleCooldownMinutes(1), 5);
+  assert.equal(normalizeSaleCooldownMinutes(5000), 1440);
 });
