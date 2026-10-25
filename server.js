@@ -13,6 +13,7 @@ import { normalizeMediaUrl } from './lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
 import { vouchDenialReason, formatAuditReason } from './lib/moderation-utils.js';
 import { parseDuration } from './lib/duration-utils.js';
+import { buildNativePollPayload } from './lib/poll-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
@@ -1623,14 +1624,8 @@ async function runCommand(name, ctx) {
       return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle(kind === 'coins' ? '🏆 Top xu server' : '🏆 Top level server')
         .setDescription(body).setFooter({ text: 'Aki Community · cập nhật trực tiếp từ profile' }).setTimestamp());
     }
-    case 'poll': {
-      const opts = [args.option1, args.option2, args.option3, args.option4].filter(Boolean);
-      const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
-      const question = sanitizePollText(args.question || 'Bình chọn', 250);
-      const safeOptions = opts.map(value => sanitizePollText(value, 900));
-      const safeFooter = sanitizePollFooter(userName);
-      return embedPayload(new EmbedBuilder().setTitle('◈ ' + question).setDescription(safeOptions.map((v, i) => emojis[i] + ' ' + v).join('\n\n')).setFooter({ text: 'Poll by ' + safeFooter }).setTimestamp());
-    }
+    case 'poll':
+      return buildNativePollPayload(args);
     case '8ball':
       return reply(`🎱 **${magic8[Math.floor(Math.random() * magic8.length)]}**`);
     case 'roll': {
@@ -2086,12 +2081,18 @@ bot.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
   const ephemeralCommands = new Set(['remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
   try {
-    // Acknowledge all slash commands before doing network/database work.
-    await interaction.deferReply({ ephemeral: ephemeralCommands.has(interaction.commandName) });
     const args = extractInteractionArgs(interaction);
+    if (interaction.commandName === 'poll') {
+      // A native poll must be sent as a new message; acknowledge it immediately instead of deferring.
+      const payload = buildNativePollPayload(args);
+      await interaction.reply(payload);
+      await addActivity(interaction.guildId, interaction.user.id, '/poll', '✅ Đã đăng poll gốc Discord tại #' + (interaction.channel?.name || 'unknown-channel') + '.');
+      return;
+    }
+    // Acknowledge all commands which may perform network/database work before running them.
+    await interaction.deferReply({ ephemeral: ephemeralCommands.has(interaction.commandName) });
     const payload = await runCommand(interaction.commandName, { guild: interaction.guild, userId: interaction.user.id, userName: interaction.user.globalName || interaction.user.username, channel: interaction.channel, args, source: 'discord' });
     await interaction.editReply(payload);
-    if (interaction.commandName === 'poll') { const sent = await interaction.fetchReply(); await addPollReactions(sent, [args.option1,args.option2,args.option3,args.option4].filter(Boolean).length); }
     await addActivity(interaction.guildId, interaction.user.id, `/${interaction.commandName}`, `✅ Slash command bởi ${interaction.user.globalName || interaction.user.username} tại #${interaction.channel?.name || 'unknown-channel'}.`);
   } catch (error) {
     const msg = `⚠️ ${error.message}`;
@@ -2180,6 +2181,15 @@ bot.on('messageCreate', async message => {
       const urlPart = parts.find(part => /^https?:\/\//i.test(part));
       const reason = parts.filter(part => part !== urlPart).join(' ').trim();
       basicMap.afk = { reason, media_url: urlPart };
+    }
+    if (name === 'poll') {
+      const rawPoll = message.content.slice(prefix.length).trim().replace(/^poll\s*/i, '');
+      const pieces = rawPoll.split('|').map(value => value.trim()).filter(Boolean);
+      if (pieces.length < 3 || pieces.length > 5) {
+        await message.reply('Dùng: `!poll Câu hỏi | Lựa chọn 1 | Lựa chọn 2 | (Lựa chọn 3) | (Lựa chọn 4)`').catch(() => {});
+        return;
+      }
+      basicMap.poll = { question: pieces[0], options: pieces.slice(1) };
     }
     if (!basicMap[name]) return;
     const payload = await runCommand(name, { guild: message.guild, userId: message.author.id, userName: message.member?.displayName, channel: message.channel, args: basicMap[name], source: 'prefix' });

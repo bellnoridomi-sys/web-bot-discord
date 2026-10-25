@@ -125,6 +125,7 @@ test('temporary ban expiry check handles future, due, and invalid timestamps', a
 });
 
 import { parseDuration } from '../lib/duration-utils.js';
+import { buildNativePollPayload } from '../lib/poll-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
   assert.equal(parseDuration('2h'), 7200);
@@ -142,4 +143,14 @@ test('ticket type selection rejects arbitrary values and maps safe labels', () =
   assert.equal(normalizeTicketType('scam-report'), 'scam-report');
   assert.equal(normalizeTicketType('owner-admin'), null);
   assert.equal(ticketTypeLabel('scam-report'), 'Báo cáo scam');
+});
+
+test('native poll payload sanitizes role mentions and requires two distinct answers', () => {
+  const payload = buildNativePollPayload({ question: 'Vote <@&123456789012345678>', options: ['One <@&123456789012345678>', 'Two'] });
+  assert.equal(payload.poll.question.text.includes('<@&123456789012345678>'), false);
+  assert.equal(payload.poll.answers[0].poll_media.text.includes('<@&123456789012345678>'), false);
+  assert.equal(payload.poll.duration, 24);
+  assert.deepEqual(payload.allowedMentions, { parse: [] });
+  assert.throws(() => buildNativePollPayload({ question: 'Only one', options: ['One'] }), /ít nhất hai/);
+  assert.throws(() => buildNativePollPayload({ question: 'Duplicate', options: ['Same','same'] }), /không được trùng/);
 });

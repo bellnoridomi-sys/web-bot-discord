@@ -27,6 +27,7 @@ jobs:
           node --check lib/community-utils.js
           node --check lib/moderation-utils.js
           node --check lib/duration-utils.js
+          node --check lib/poll-utils.js
           node --test tests/*.test.js
       - name: Check critical dashboard and reaction-role hooks exist
         run: |
