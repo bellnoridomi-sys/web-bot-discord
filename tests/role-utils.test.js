@@ -249,6 +249,6 @@ test('mass mention detection catches everyone and excessive mention counts', () 
   assert.equal(isMassMention({ content: 'hello', mentions: { users: { size: 1 }, roles: { size: 0 } } }, 3), false);
 });
 test('raid join burst triggers only after configured threshold within time window', () => {
-  assert.equal(isRaidJoinBurst([1000,2000,3000],4000,10000,5), true);
+  assert.equal(isRaidJoinBurst([0,1000,2000,3000],4000,10000,5), true);
   assert.equal(isRaidJoinBurst([1000,2000,3000],4000,1000,5), false);
 });
