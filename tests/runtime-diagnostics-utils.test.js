@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { safeRuntimeErrorCode, classifyGatewayDebugMessage, classifyDiscordRestRoute, normalizeRateLimitDiagnostics } from '../lib/runtime-diagnostics-utils.js';
+import { safeRuntimeErrorCode, classifyGatewayDebugMessage, classifyDiscordRestRoute, normalizeRateLimitDiagnostics, normalizeDiscordRestResponseDiagnostics, normalizeRetryAfterBodyValue } from '../lib/runtime-diagnostics-utils.js';
 
 test('runtime diagnostics expose a safe error code rather than an error message', () => {
   assert.equal(safeRuntimeErrorCode({ code: 4014, message: 'raw token=secret-value' }), '4014');
@@ -62,4 +62,48 @@ test('rate-limit diagnostics retain scope, retry timing and safe route class onl
     timeToResetMs: null,
     at: timestamp
   });
+});
+
+
+test('HTTP 429 diagnostics capture safe Retry-After and rate-limit scope headers', () => {
+  const headers = new Headers({
+    'Retry-After': '12.5',
+    'X-RateLimit-Reset-After': '12.25',
+    'X-RateLimit-Scope': 'global',
+    'X-RateLimit-Global': 'true'
+  });
+  assert.deepEqual(normalizeDiscordRestResponseDiagnostics(
+    { method: 'get', route: '/gateway/bot?token=secret' },
+    { status: 429, headers },
+    '2026-10-25T07:00:00.000Z'
+  ), {
+    status: 429,
+    method: 'GET',
+    route: 'gateway_bot',
+    at: '2026-10-25T07:00:00.000Z',
+    retryAfterMs: 12500,
+    resetAfterMs: 12250,
+    scope: 'global',
+    global: true
+  });
+});
+
+test('HTTP diagnostics handle missing/invalid headers without exposing raw values', () => {
+  assert.deepEqual(normalizeDiscordRestResponseDiagnostics(
+    { method: 'POST', route: '/users/@me?token=secret' },
+    { status: 429, headers: new Headers({ 'X-RateLimit-Scope': 'unexpected' }) },
+    '2026-10-25T07:00:00.000Z'
+  ), {
+    status: 429,
+    method: 'POST',
+    route: 'current_user',
+    at: '2026-10-25T07:00:00.000Z',
+    retryAfterMs: null,
+    resetAfterMs: null,
+    scope: 'unknown',
+    global: false
+  });
+  assert.equal(normalizeRetryAfterBodyValue(3.25), 3250);
+  assert.equal(normalizeRetryAfterBodyValue('bad'), null);
+  assert.equal(normalizeRetryAfterBodyValue(-1), null);
 });
