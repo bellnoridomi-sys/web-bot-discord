@@ -4,9 +4,9 @@ Full-stack Discord bot + web dashboard, styled monochrome/cinematic. The backend
 
 ## Features
 
-36 real bot features via slash commands:
+Slash commands currently defined in code (they sync when the bot successfully logs in):
 
-`/ping` · `/help` · `/server` · `/userinfo` · `/avatar` · `/botinfo` · `/rank` · `/balance` · `/daily` · `/work` · `/leaderboard` · `/poll` · `/8ball` · `/roll` · `/coinflip` · `/remind` · `/afk [reason] [image_url] [media]` · `/warn` · `/warnings` · `/clear` · `/slowmode` · `/lock` · `/unlock` · `/kick` · `/ban` · `/timeout` · `/role` · `/legit` · `/ticket-setup` · `/role-panel` · `/announce` · `/vc-join` · `/vc-leave` · `/auto-voice` · `/welcome-setup` · `/goodbye-setup`
+`/ping` · `/help` · `/server` · `/userinfo` · `/avatar` · `/botinfo` · `/rank` · `/balance` · `/daily` · `/work` · `/leaderboard` · `/poll` · `/8ball` · `/roll` · `/coinflip` · `/remind` · `/reminders` · `/reminder-cancel` · `/afk` · `/warn` · `/warnings` · `/clear` · `/slowmode` · `/lock` · `/unlock` · `/kick` · `/ban` · `/tempban` · `/timeout` · `/unban` · `/untimeout` · `/delwarn` · `/case` · `/modlog` · `/vouch` · `/vouches` · `/scamcheck` · `/scam-add` · `/role` · `/legit` · `/ticket-setup` · `/role-panel` · `/announce` · `/vc-join` · `/vc-leave` · `/auto-voice` · `/welcome-setup` · `/goodbye-setup` · `/verify-setup` · `/giveaway` · `/giveaway-reroll` · `/suggest` · `/suggest-setup` · `/shop` · `/buy` · `/sell` · `/sell-setup` · `/temp-voice-setup` · `/tag` · `/tag-set` · `/tag-delete` · `/faq-set` · `/faq-delete` · `/xp-setup` · `/automod-setup`
 
 The web dashboard has guild selection, live runtime metrics, voice controls, command lab, activity feed, Discord OAuth, Google OAuth, animated 3D UI, and an AFK Studio. The AFK profile is stored per server/user and supports an optional direct image/GIF URL.
 

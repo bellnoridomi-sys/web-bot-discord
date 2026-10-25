@@ -29,7 +29,8 @@ import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMa
 import { normalizePage, slicePage } from './lib/page-utils.js';
 import { keepsCommandResultPrivate, summarizeCommandResult } from './lib/command-routing-utils.js';
 import { normalizeMessageTemplate, renderMessageTemplate } from './lib/message-template-utils.js';
-import { checkCommandCooldown, normalizeAutocompleteChoices } from './lib/ux-utils.js';
+import { checkCommandCooldown, normalizeAutocompleteChoices, formatReminderList } from './lib/ux-utils.js';
+import { getCommandRegistrationScopes } from './lib/command-registration-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -2739,7 +2740,7 @@ async function runCommand(name, ctx) {
     case 'reminders': {
       const rows = await listPendingReminders(guild.id, userId);
       if (!rows.length) return reply('Bạn không có lời nhắc nào đang chờ.');
-      const body = rows.map(row => '#' + row.id + ' · <t:' + Math.floor(Number(row.execute_at) / 1000) + ':R> · ' + String(row.text || '').slice(0, 150)).join('\\n');
+      const body = formatReminderList(rows);
       return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle('⏰ Lời nhắc của bạn').setDescription(body).setFooter({ text: 'Huỷ bằng /reminder-cancel reminder_id' }).setTimestamp());
     }
     case 'reminder-cancel': {
@@ -3388,14 +3389,24 @@ bot.on('ready', async () => {
   bot.user.setPresence({ status: presenceStatus, activities: [{ name: presenceText, type: presenceType }] });
   try {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-    if (process.env.DISCORD_GUILD_ID) {
-      await rest.put(Routes.applicationGuildCommands(bot.user.id, process.env.DISCORD_GUILD_ID), { body: commands });
-      console.log(`Registered ${commands.length} guild commands.`);
-    } else {
-      await rest.put(Routes.applicationCommands(bot.user.id), { body: commands });
-      console.log(`Registered ${commands.length} global commands.`);
+    const guildId = String(process.env.DISCORD_GUILD_ID || '').trim();
+    if (guildId && !/^\d{17,20}$/.test(guildId)) {
+      console.warn('DISCORD_GUILD_ID is invalid; registering global commands only.');
     }
-  } catch (error) { console.error('Command registration failed:', error); }
+    // Always publish the canonical global command set. A configured development guild
+    // receives the same set too, so fast guild updates never replace global availability.
+    for (const scope of getCommandRegistrationScopes(guildId)) {
+      if (scope === 'guild') {
+        await rest.put(Routes.applicationGuildCommands(bot.user.id, guildId), { body: commands });
+        console.log(`Registered ${commands.length} guild commands in the configured development server.`);
+      } else {
+        await rest.put(Routes.applicationCommands(bot.user.id), { body: commands });
+        console.log(`Registered ${commands.length} global commands.`);
+      }
+    }
+  } catch (error) {
+    console.error('Command registration failed:', error.code || error.status || error.message);
+  }
   for (const guild of bot.guilds.cache.values()) {
     await guild.channels.fetch().catch(() => {});
     for (const channel of guild.channels.cache.values()) {
