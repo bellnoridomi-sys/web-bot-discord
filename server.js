@@ -71,7 +71,7 @@ app.use(helmet({ crossOriginEmbedderPolicy: false, contentSecurityPolicy: { dire
   styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
   fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
   imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
-  connectSrc: ["'self'", 'https://discord.com'], objectSrc: ["'none'"],
+  connectSrc: ["'self'", 'wss:', 'https://discord.com'], objectSrc: ["'none'"],
   baseUri: ["'self'"], frameAncestors: ["'self'"],
   formAction: ["'self'", 'https://discord.com', 'https://accounts.google.com']
 } } }));
@@ -2480,9 +2480,11 @@ async function runCommand(name, ctx) {
       });
       await addActivity(guild.id, userId, enabled ? 'automod:enabled' : 'automod:disabled',
         'AutoMod ' + (enabled ? 'bật' : 'tắt') + ' · blocked domains=' + domains.length + ' · spam=' + config.automod_spam_threshold + '/' + config.automod_spam_window_seconds + 's.');
-      const raidNote = enabled && !me.permissions.has(PermissionFlagsBits.ManageChannels)
-        ? ' Lưu ý: bot thiếu Manage Channels nên không thể khóa text khi phát hiện raid.'
-        : '';
+      const raidNote = enabled && !pool
+        ? ' Lưu ý: raid lockdown yêu cầu PostgreSQL để tự khôi phục quyền sau restart.'
+        : enabled && !me.permissions.has(PermissionFlagsBits.ManageChannels)
+          ? ' Lưu ý: bot thiếu Manage Channels nên không thể khóa text khi phát hiện raid.'
+          : '';
       return reply((enabled ? '🛡️ AutoMod đã bật.' : 'AutoMod đã tắt.') + ' Domain đang chặn: ' + (domains.join(', ') || 'chưa cấu hình') + '.' + raidNote);
     }
     case 'shop': {
@@ -2679,6 +2681,7 @@ function extractInteractionArgs(interaction) {
   }
   if (interaction.commandName === 'giveaway-reroll') out.giveawayId = interaction.options.getString('giveaway_id');
   if (interaction.commandName === 'suggest') out.text = interaction.options.getString('text');
+  if (interaction.commandName === 'buy') out.item = interaction.options.getString('item');
   if (interaction.commandName === 'suggest-setup') out.channel = interaction.options.getChannel('channel')?.id;
   if (interaction.commandName === 'automod-setup') {
     out.enabled = interaction.options.getBoolean('enabled');
@@ -3097,6 +3100,10 @@ function scheduleRaidLockdownRestore(guildId, entry) {
 
 async function beginRaidLockdown(guild, config, joinCount) {
   if (!guild || !config?.automod_enabled) return false;
+  if (!pool) {
+    await addActivity(guild.id, null, 'automod:raid-lockdown-unavailable', 'Không bật lockdown vì chưa có PostgreSQL để phục hồi quyền sau khi process khởi động lại.').catch(() => {});
+    return false;
+  }
   const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
   if (!me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
     await addActivity(guild.id, null, 'automod:raid-lockdown-unavailable', 'Phát hiện join burst (' + joinCount + ') nhưng bot thiếu Manage Channels.').catch(() => {});
