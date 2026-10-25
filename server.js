@@ -15,6 +15,7 @@ import { vouchDenialReason, formatAuditReason, shouldEscalateWarnings } from './
 import { parseDuration } from './lib/duration-utils.js';
 import { buildNativePollPayload } from './lib/poll-utils.js';
 import { parsePagination, csvCell } from './lib/activity-utils.js';
+import { isAccountTooNew } from './lib/verification-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
@@ -158,7 +159,13 @@ async function getConfig(guildId) {
     log_channel_id: null,
     auto_role_id: null,
     welcome_channel_id: null,
-    goodbye_channel_id: null
+    goodbye_channel_id: null,
+    verification_enabled: false,
+    verification_channel_id: null,
+    verification_message_id: null,
+    verification_role_id: null,
+    verification_quarantine_role_id: null,
+    verification_min_account_days: 0
   });
   return memory.configs.get(guildId);
 }
@@ -168,8 +175,12 @@ async function setConfig(guildId, patch) {
   const next = { ...current, ...patch };
   if (pool) {
     await dbQuery(`
-      INSERT INTO guild_configs(guild_id, auto_voice_enabled, auto_voice_channel_id, prefix, log_channel_id, auto_role_id, welcome_channel_id, goodbye_channel_id, updated_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+      INSERT INTO guild_configs(
+        guild_id, auto_voice_enabled, auto_voice_channel_id, prefix, log_channel_id, auto_role_id,
+        welcome_channel_id, goodbye_channel_id, verification_enabled, verification_channel_id,
+        verification_message_id, verification_role_id, verification_quarantine_role_id,
+        verification_min_account_days, updated_at
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
       ON CONFLICT(guild_id) DO UPDATE SET
         auto_voice_enabled=EXCLUDED.auto_voice_enabled,
         auto_voice_channel_id=EXCLUDED.auto_voice_channel_id,
@@ -178,8 +189,21 @@ async function setConfig(guildId, patch) {
         auto_role_id=EXCLUDED.auto_role_id,
         welcome_channel_id=EXCLUDED.welcome_channel_id,
         goodbye_channel_id=EXCLUDED.goodbye_channel_id,
+        verification_enabled=EXCLUDED.verification_enabled,
+        verification_channel_id=EXCLUDED.verification_channel_id,
+        verification_message_id=EXCLUDED.verification_message_id,
+        verification_role_id=EXCLUDED.verification_role_id,
+        verification_quarantine_role_id=EXCLUDED.verification_quarantine_role_id,
+        verification_min_account_days=EXCLUDED.verification_min_account_days,
         updated_at=NOW()
-    `, [guildId, Boolean(next.auto_voice_enabled), next.auto_voice_channel_id || null, next.prefix || '!', next.log_channel_id || null, next.auto_role_id || null, next.welcome_channel_id || null, next.goodbye_channel_id || null]);
+    `, [
+      guildId, Boolean(next.auto_voice_enabled), next.auto_voice_channel_id || null,
+      next.prefix || '!', next.log_channel_id || null, next.auto_role_id || null,
+      next.welcome_channel_id || null, next.goodbye_channel_id || null,
+      Boolean(next.verification_enabled), next.verification_channel_id || null,
+      next.verification_message_id || null, next.verification_role_id || null,
+      next.verification_quarantine_role_id || null, Math.min(365, Math.max(0, Number(next.verification_min_account_days) || 0))
+    ]);
   } else memory.configs.set(guildId, next);
   return next;
 }
@@ -1058,14 +1082,20 @@ const commands = [
   new SlashCommandBuilder().setName('vc-leave').setDescription('Bot rời voice.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
   new SlashCommandBuilder().setName('auto-voice').setDescription('Bật/tắt tự động giữ voice.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addBooleanOption(o => o.setName('enabled').setDescription('Bật hoặc tắt').setRequired(true)).addChannelOption(o => o.setName('channel').setDescription('Kênh voice').addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(false)),
   new SlashCommandBuilder().setName('welcome-setup').setDescription('Chọn kênh chào thành viên mới.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh chào mừng').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true)),
-  new SlashCommandBuilder().setName('goodbye-setup').setDescription('Chọn kênh thông báo thành viên rời server.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh tạm biệt').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
+  new SlashCommandBuilder().setName('goodbye-setup').setDescription('Chọn kênh thông báo thành viên rời server.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()).addChannelOption(o => o.setName('channel').setDescription('Kênh tạm biệt').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true)),
+  new SlashCommandBuilder().setName('verify-setup').setDescription('Cấu hình cổng xác minh và cách ly tài khoản mới.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+    .addBooleanOption(o => o.setName('enabled').setDescription('Bật hoặc tắt cổng xác minh').setRequired(true))
+    .addChannelOption(o => o.setName('channel').setDescription('Kênh panel xác minh').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(false))
+    .addRoleOption(o => o.setName('member_role').setDescription('Role Member cấp sau xác minh').setRequired(false))
+    .addRoleOption(o => o.setName('quarantine_role').setDescription('Role cách ly tài khoản quá mới').setRequired(false))
+    .addIntegerOption(o => o.setName('min_account_days').setDescription('Tuổi tài khoản tối thiểu (0–365 ngày)').setMinValue(0).setMaxValue(365).setRequired(false))
 ].map(c => c.toJSON());
 
 const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Đặt lời nhắc 30m / 2h / 1d'], ['reminders', 'Lời nhắc đang chờ'], ['reminder-cancel', 'Huỷ lời nhắc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
-  ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
+  ['verify-setup', 'Cổng xác minh / role cách ly'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
@@ -1920,6 +1950,43 @@ async function runCommand(name, ctx) {
       await addActivity(guild.id, userId, name, '#' + targetChannel.name);
       return reply((name === 'welcome-setup' ? '👋 Kênh chào mừng' : '👋 Kênh tạm biệt') + ' đã được đặt thành <#' + targetChannel.id + '>.');
     }
+    case 'verify-setup': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      if (!args.enabled) {
+        await setConfig(guild.id, { verification_enabled: false });
+        await addActivity(guild.id, userId, 'verification:disable', 'Đã tắt cổng xác minh.');
+        return reply('Đã tắt cổng xác minh. Auto-role cũ được khôi phục cho thành viên mới.');
+      }
+      const channel = args.channel ? await guild.channels.fetch(args.channel).catch(() => null) : null;
+      if (!channel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) throw new Error('Khi bật xác minh, hãy chọn kênh text/announcement thuộc server.');
+      const current = await getConfig(guild.id);
+      const roleId = args.verifyRole || current.verification_role_id || current.auto_role_id || guild.roles.cache.find(role => role.name === '👥 Member')?.id;
+      const verifiedRole = roleId ? await guild.roles.fetch(roleId).catch(() => null) : null;
+      if (!verifiedRole || verifiedRole.managed || verifiedRole.id === guild.id) throw new Error('Không tìm thấy role Member hợp lệ. Hãy chọn member_role.');
+      const minDays = Math.min(365, Math.max(0, Number.isInteger(args.minAccountDays) ? args.minAccountDays : Number(current.verification_min_account_days) || 0));
+      const quarantineId = args.quarantineRole || current.verification_quarantine_role_id || null;
+      const quarantineRole = quarantineId ? await guild.roles.fetch(quarantineId).catch(() => null) : null;
+      if (minDays > 0 && (!quarantineRole || quarantineRole.managed || quarantineRole.id === guild.id)) throw new Error('Nếu đặt tuổi tài khoản tối thiểu lớn hơn 0, phải chọn quarantine_role hợp lệ.');
+      const me = guild.members.me || await guild.members.fetchMe();
+      if (!me.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Bot cần quyền Manage Roles để cấp role xác minh.');
+      if (verifiedRole.position >= me.roles.highest.position || (quarantineRole && quarantineRole.position >= me.roles.highest.position)) throw new Error('Role xác minh và role cách ly phải nằm dưới role cao nhất của bot.');
+      const channelPerms = channel.permissionsFor(me);
+      if (!channelPerms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) throw new Error('Bot cần View Channel, Send Messages và Embed Links trong kênh panel.');
+      const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('aki:verify:member').setLabel('Xác minh và nhận Member').setStyle(ButtonStyle.Success));
+      const message = await channel.send({
+        embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Cổng xác minh thành viên')
+          .setDescription('Nhấn nút bên dưới để xác minh và nhận role Member. Tài khoản mới hơn ' + minDays + ' ngày sẽ được giữ ở role cách ly cho đến khi đủ tuổi.')
+          .setFooter({ text: APP_NAME + ' · Verification Gate' }).setTimestamp()],
+        components: [row], allowedMentions: { parse: [] }
+      });
+      await setConfig(guild.id, {
+        verification_enabled: true, verification_channel_id: channel.id, verification_message_id: message.id,
+        verification_role_id: verifiedRole.id, verification_quarantine_role_id: quarantineRole?.id || null,
+        verification_min_account_days: minDays
+      });
+      await addActivity(guild.id, userId, 'verification:setup', 'Cổng xác minh tại #' + channel.name + ' · min account age ' + minDays + ' days.');
+      return reply('Đã bật cổng xác minh tại <#' + channel.id + '>. Panel ID ' + message.id + '. Tài khoản mới sẽ không nhận auto-role.');
+    }
     case 'auto-voice': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
       if (args.enabled) {
@@ -1961,7 +2028,13 @@ function extractInteractionArgs(interaction) {
   if (interaction.commandName === 'clear' || interaction.commandName === 'slowmode') out[interaction.commandName === 'clear' ? 'amount' : 'seconds'] = interaction.options.getInteger(interaction.commandName === 'clear' ? 'amount' : 'seconds');
   if (interaction.commandName === 'role') { out.mode = interaction.options.getString('mode'); out.user = getUserId(); out.role = interaction.options.getRole('role')?.id; }
   if (interaction.commandName === 'announce') out.message = interaction.options.getString('message');
-  if (['vc-join', 'welcome-setup', 'goodbye-setup'].includes(interaction.commandName)) out.channel = interaction.options.getChannel('channel')?.id;
+  if (['vc-join', 'welcome-setup', 'goodbye-setup', 'verify-setup'].includes(interaction.commandName)) out.channel = interaction.options.getChannel('channel')?.id;
+  if (interaction.commandName === 'verify-setup') {
+    out.enabled = interaction.options.getBoolean('enabled');
+    out.verifyRole = interaction.options.getRole('member_role')?.id;
+    out.quarantineRole = interaction.options.getRole('quarantine_role')?.id;
+    out.minAccountDays = interaction.options.getInteger('min_account_days');
+  }
   if (interaction.commandName === 'auto-voice') { out.enabled = interaction.options.getBoolean('enabled'); out.channel = interaction.options.getChannel('channel')?.id; }
   return out;
 }

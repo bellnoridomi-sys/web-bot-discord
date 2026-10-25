@@ -127,6 +127,7 @@ test('temporary ban expiry check handles future, due, and invalid timestamps', a
 import { parseDuration } from '../lib/duration-utils.js';
 import { buildNativePollPayload } from '../lib/poll-utils.js';
 import { parsePagination, csvCell } from '../lib/activity-utils.js';
+import { isAccountTooNew } from '../lib/verification-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
   assert.equal(parseDuration('2h'), 7200);
@@ -174,4 +175,12 @@ test('CSV export quotes delimiters and neutralizes spreadsheet formulas', () => 
   assert.equal(csvCell('plain, "quoted"'), '"plain, ""quoted"""');
   assert.equal(csvCell('=CMD()'), '"\'=CMD()"');
   assert.equal(csvCell('hello' + String.fromCharCode(10) + 'world'), '"hello world"');
+});
+
+test('account-age gate quarantines only when younger than configured threshold', () => {
+  const day = 24 * 60 * 60 * 1000;
+  assert.equal(isAccountTooNew(1000, 0, 1001), false);
+  assert.equal(isAccountTooNew(1000, 2, 1000 + day), true);
+  assert.equal(isAccountTooNew(1000, 2, 1000 + 2 * day), false);
+  assert.equal(isAccountTooNew('invalid', 2, 1000 + day), true);
 });
