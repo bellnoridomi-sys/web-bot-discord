@@ -46,7 +46,7 @@ jobs:
           let inlineScriptCount = 0;
           for (const filename of htmlFiles) {
             const source = fs.readFileSync(path.join(directory, filename), 'utf8');
-            for (const match of source.matchAll(new RegExp('<script\\\\b[^>]*>([\\\\s\\\\S]*?)</script\\\\s*>', 'gi'))) {
+            for (const match of source.matchAll(new RegExp('<script\\b[^>]*>([\\s\\S]*?)</script\\s*>', 'gi'))) {
               const code = match[1].trim();
               if (!code) continue;
               try { new Function(code); }
