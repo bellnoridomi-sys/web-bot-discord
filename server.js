@@ -25,6 +25,7 @@ import { nextDailyStreak, dailyStreakReward } from './lib/economy-utils.js';
 import { normalizeSaleSubmission, canPostSale, normalizeSaleCooldownMinutes } from './lib/sales-utils.js';
 import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from './lib/temp-voice-utils.js';
 import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMatchingFaq } from './lib/tag-utils.js';
+import { normalizePage, slicePage } from './lib/page-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -357,6 +358,37 @@ async function addWarning(guildId, userId, moderatorId, reason) {
   }
 }
 
+async function getWarningsPage(guildId, userId, requestedPage = 1) {
+  const pageSize = 10;
+  if (pool) {
+    const totalResult = await dbQuery('SELECT COUNT(*)::int AS total FROM warnings WHERE guild_id=$1 AND user_id=$2', [guildId,userId]);
+    const total = Number(totalResult.rows[0]?.total || 0);
+    const meta = normalizePage(requestedPage,total,pageSize);
+    const result = await dbQuery(
+      'SELECT id,guild_id,user_id,moderator_id,reason,created_at FROM warnings WHERE guild_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT $3 OFFSET $4',
+      [guildId,userId,meta.pageSize,meta.offset]
+    );
+    return { ...meta, items: result.rows };
+  }
+  const list = [...(memory.warnings.get(guildId + ':' + userId) || [])].sort((a,b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  return slicePage(list,requestedPage,pageSize);
+}
+async function buildWarningsPagePayload(guild, targetId, requestedPage = 1) {
+  const page = await getWarningsPage(guild.id,targetId,requestedPage);
+  const member = await guild.members.fetch(targetId).catch(() => null);
+  const displayName = member?.user?.globalName || member?.user?.username || targetId;
+  const description = page.items.length
+    ? page.items.map(row => '**#' + (row.id || '—') + '** · ' + String(row.reason || 'Không có lý do').slice(0,260) +
+        ' · ' + (row.created_at ? '<t:' + Math.floor(new Date(row.created_at).getTime()/1000) + ':R>' : 'không rõ thời gian')).join('\n')
+    : 'Thành viên này chưa có cảnh cáo.';
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('aki:warnings:' + targetId + ':' + Math.max(1,page.page-1)).setLabel('← Trước').setStyle(ButtonStyle.Secondary).setDisabled(page.page<=1),
+    new ButtonBuilder().setCustomId('aki:warnings:' + targetId + ':' + Math.min(page.pages,page.page+1)).setLabel('Sau →').setStyle(ButtonStyle.Secondary).setDisabled(page.page>=page.pages)
+  );
+  const embed = new EmbedBuilder().setColor(0xED4245).setTitle('📋 Warnings · ' + displayName)
+    .setDescription(description).setFooter({ text: 'Trang ' + page.page + '/' + page.pages + ' · Tổng ' + page.total + ' cảnh cáo · /delwarn warning_id' }).setTimestamp();
+  return { embeds:[embed], components:[row], allowedMentions:{parse:[]} };
+}
 async function getWarnings(guildId, userId) {
   if (pool) {
     const r = await dbQuery('SELECT * FROM warnings WHERE guild_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 15', [guildId, userId]);
@@ -751,6 +783,37 @@ function progressBar(current, total, length = 12) {
   return '█'.repeat(filled) + '░'.repeat(Math.max(0, length - filled));
 }
 
+async function getCommunityLeaderboardPage(guildId, kind = 'levels', requestedPage = 1) {
+  const pageSize = 10;
+  if (pool) {
+    const sortColumn = kind === 'coins' ? 'coins' : 'xp';
+    const countResult = await dbQuery('SELECT COUNT(*)::int AS total FROM community_profiles WHERE guild_id=$1',[guildId]);
+    const meta = normalizePage(requestedPage,Number(countResult.rows[0]?.total || 0),pageSize);
+    const result = await dbQuery(
+      'SELECT user_id,xp,level,coins FROM community_profiles WHERE guild_id=$1 ORDER BY ' + sortColumn + ' DESC, user_id ASC LIMIT $2 OFFSET $3',
+      [guildId,meta.pageSize,meta.offset]
+    );
+    return { ...meta, items: result.rows.map((row,index)=>({rank:meta.offset+index+1,user_id:row.user_id,xp:Number(row.xp),level:Number(row.level),coins:Number(row.coins) })) };
+  }
+  const all = [...memory.communityProfiles.values()].filter(row=>row.guild_id===guildId)
+    .sort((a,b)=> kind==='coins' ? Number(b.coins)-Number(a.coins) : Number(b.xp)-Number(a.xp));
+  const page = slicePage(all,requestedPage,pageSize);
+  return { ...page, items: page.items.map((row,index)=>({...row,rank:page.offset+index+1})) };
+}
+async function buildLeaderboardPagePayload(guild, kind = 'levels', requestedPage = 1) {
+  const page = await getCommunityLeaderboardPage(guild.id,kind,requestedPage);
+  const body = page.items.length ? page.items.map(row => kind === 'coins'
+    ? '`#' + row.rank + '` <@' + row.user_id + '> · **' + Number(row.coins).toLocaleString('en-US') + ' xu**'
+    : '`#' + row.rank + '` <@' + row.user_id + '> · **Level ' + row.level + '** (' + Number(row.xp).toLocaleString('en-US') + ' XP)'
+  ).join('\n') : 'Chưa có dữ liệu. Hãy trò chuyện hoặc dùng /daily để bắt đầu.';
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('aki:leaderboard:' + (kind==='coins'?'coins':'levels') + ':' + Math.max(1,page.page-1)).setLabel('← Trước').setStyle(ButtonStyle.Secondary).setDisabled(page.page<=1),
+    new ButtonBuilder().setCustomId('aki:leaderboard:' + (kind==='coins'?'coins':'levels') + ':' + Math.min(page.pages,page.page+1)).setLabel('Sau →').setStyle(ButtonStyle.Secondary).setDisabled(page.page>=page.pages)
+  );
+  const embed = new EmbedBuilder().setColor(0x5865F2).setTitle(kind==='coins'?'🏆 Top xu server':'🏆 Top level server')
+    .setDescription(body).setFooter({text:'Trang '+page.page+'/'+page.pages+' · '+page.total+' thành viên · Aki Community'}).setTimestamp();
+  return { embeds:[embed],components:[row],allowedMentions:{parse:[]} };
+}
 async function getCommunityLeaderboard(guildId, kind = 'levels', limit = 10) {
   const safeLimit = Math.max(1, Math.min(10, Number(limit) || 10));
   if (pool) {
@@ -1905,6 +1968,25 @@ async function handleAkiButton(interaction) {
   const customId = interaction.customId || '';
   if (!customId.startsWith('aki:') || !interaction.guild) return false;
   const guild = interaction.guild;
+  const warningsPageMatch = customId.match(/^aki:warnings:([0-9]{17,20}):([0-9]{1,6})$/);
+  if (warningsPageMatch) {
+    const actor = await fetchGuildMember(guild,interaction.user.id);
+    if (!actor || (actor.id !== guild.ownerId && !actor.permissions.has(PermissionFlagsBits.ModerateMembers))) {
+      await interaction.reply({content:'Chỉ moderator có quyền Moderate Members mới xem được cảnh cáo.',ephemeral:true});
+      return true;
+    }
+    await interaction.deferUpdate();
+    const payload = await buildWarningsPagePayload(guild,warningsPageMatch[1],Number(warningsPageMatch[2]));
+    await interaction.editReply(payload);
+    return true;
+  }
+  const leaderboardPageMatch = customId.match(/^aki:leaderboard:(levels|coins):([0-9]{1,6})$/);
+  if (leaderboardPageMatch) {
+    await interaction.deferUpdate();
+    const payload = await buildLeaderboardPagePayload(guild,leaderboardPageMatch[1],Number(leaderboardPageMatch[2]));
+    await interaction.editReply(payload);
+    return true;
+  }
   if (customId === 'aki:verify:member') {
     await interaction.deferReply({ ephemeral: true });
     const config = await getConfig(guild.id);
@@ -2571,13 +2653,7 @@ async function runCommand(name, ctx) {
     }
     case 'leaderboard': {
       const kind = args.kind === 'coins' ? 'coins' : 'levels';
-      const rows = await getCommunityLeaderboard(guild.id, kind, 10);
-      const body = rows.length ? rows.map(row => kind === 'coins'
-        ? '`#' + row.rank + '` <@' + row.user_id + '> · **' + Number(row.coins).toLocaleString('en-US') + ' xu**'
-        : '`#' + row.rank + '` <@' + row.user_id + '> · **Level ' + row.level + '** (' + Number(row.xp).toLocaleString('en-US') + ' XP)'
-      ).join('\n') : 'Chưa có dữ liệu. Hãy trò chuyện hoặc dùng /daily để bắt đầu.';
-      return embedPayload(new EmbedBuilder().setColor(0x5865F2).setTitle(kind === 'coins' ? '🏆 Top xu server' : '🏆 Top level server')
-        .setDescription(body).setFooter({ text: 'Aki Community · cập nhật trực tiếp từ profile' }).setTimestamp());
+      return buildLeaderboardPagePayload(guild,kind,1);
     }
     case 'poll':
       return buildNativePollPayload(args);
@@ -2685,8 +2761,7 @@ async function runCommand(name, ctx) {
     case 'warnings': {
       ensureMemberPermission(user, PermissionFlagsBits.ModerateMembers);
       const m = target || user;
-      const list = await getWarnings(guild.id, m.id);
-      return reply(`📋 **Warnings · ${m.user.globalName || m.user.username}**\n${list.length ? list.map((w, i) => `#${w.id || i + 1} · ${w.reason}`).join('\n') : 'Không có cảnh cáo.'}`);
+      return buildWarningsPagePayload(guild,m.id,1);
     }
     case 'clear': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageMessages);

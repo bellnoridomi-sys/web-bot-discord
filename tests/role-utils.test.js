@@ -138,6 +138,7 @@ import { normalizeSaleSubmission, canPostSale, normalizeSaleCooldownMinutes } fr
 import { readFileSync } from 'node:fs';
 import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from '../lib/temp-voice-utils.js';
 import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMatchingFaq } from '../lib/tag-utils.js';
+import { normalizePage, slicePage } from '../lib/page-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, isRaidJoinBurst } from '../lib/automod-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
@@ -359,4 +360,16 @@ test('tag and FAQ input are normalized, mentions neutralized, and longest FAQ ma
     { keyword: 'how to trade', response: 'long' }
   ], 'Can you explain HOW TO TRADE safely?');
   assert.equal(rule.response, 'long');
+});
+
+test('pagination bounds pages and returns a stable slice', () => {
+  assert.deepEqual(normalizePage(99,23,10),{page:3,pageSize:10,total:23,pages:3,offset:20});
+  assert.deepEqual(normalizePage(-2,0,10),{page:1,pageSize:10,total:0,pages:1,offset:0});
+  assert.deepEqual(slicePage(['a','b','c','d'],2,2),{page:2,pageSize:2,total:4,pages:2,offset:2,items:['c','d']});
+});
+test('warning page controls re-check moderator rights and leaderboard controls are guild-scoped', () => {
+  const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  assert.ok(source.includes("customId.match(/^aki:warnings:([0-9]{17,20}):([0-9]{1,6})$/)"));
+  assert.ok(source.includes("actor.permissions.has(PermissionFlagsBits.ModerateMembers)"));
+  assert.ok(source.includes("customId.match(/^aki:leaderboard:(levels|coins):([0-9]{1,6})$/)"));
 });

@@ -37,6 +37,7 @@ jobs:
           node --check lib/sales-utils.js
           node --check lib/temp-voice-utils.js
           node --check lib/tag-utils.js
+          node --check lib/page-utils.js
           node --check lib/automod-utils.js
           node --check lib/xp-utils.js
           node --check lib/migration-utils.js
