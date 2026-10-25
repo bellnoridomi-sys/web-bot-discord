@@ -3510,7 +3510,9 @@ bot.on('interactionCreate', async interaction => {
   try {
     const args = extractInteractionArgs(interaction);
     if (interaction.commandName === 'poll') {
-      // A native poll must be sent as a new message; acknowledge it immediately instead of deferring.
+      // Native polls must reply immediately, so apply the shared cooldown inline instead of via runCommand.
+      const cooldown = checkCommandCooldown(commandCooldowns, interaction.guildId + ':' + interaction.user.id + ':poll', Date.now(), COMMAND_COOLDOWN_MS);
+      if (!cooldown.allowed) throw new Error('⏳ Chờ ' + Math.max(1, Math.ceil(cooldown.remainingMs / 1000)) + ' giây trước khi dùng lại /poll.');
       const payload = buildNativePollPayload(args);
       await interaction.reply(payload);
       await addActivity(interaction.guildId, interaction.user.id, '/poll', '✅ Đã đăng poll gốc Discord tại #' + (interaction.channel?.name || 'unknown-channel') + '.');

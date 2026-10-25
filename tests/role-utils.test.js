@@ -412,3 +412,10 @@ test('autocomplete choices are filtered, bounded to 25 and Discord field limits'
   assert.equal(normalizeAutocompleteChoices([{name:'n'.repeat(120),value:'v'.repeat(120)}],'',25)[0].name.length,100);
   assert.equal(normalizeAutocompleteChoices([{name:'n',value:'v'}],'no-match').length,0);
 });
+
+test('native poll path explicitly consumes the shared command cooldown before immediate reply', () => {
+  const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  const pollBranch = source.slice(source.indexOf("if (interaction.commandName === 'poll')"), source.indexOf("await interaction.deferReply", source.indexOf("if (interaction.commandName === 'poll')")));
+  assert.ok(pollBranch.includes('checkCommandCooldown(commandCooldowns'));
+  assert.ok(pollBranch.includes('buildNativePollPayload(args)'));
+});
