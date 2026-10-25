@@ -31,7 +31,7 @@ import { keepsCommandResultPrivate, summarizeCommandResult } from './lib/command
 import { normalizeMessageTemplate, renderMessageTemplate } from './lib/message-template-utils.js';
 import { checkCommandCooldown, normalizeAutocompleteChoices, formatReminderList } from './lib/ux-utils.js';
 import { getCommandRegistrationScopes } from './lib/command-registration-utils.js';
-import { safeRuntimeErrorCode, classifyGatewayDebugMessage, classifyDiscordRestRoute, normalizeRateLimitDiagnostics } from './lib/runtime-diagnostics-utils.js';
+import { safeRuntimeErrorCode, classifyGatewayDebugMessage, classifyDiscordRestRoute, normalizeRateLimitDiagnostics, normalizeDiscordRestResponseDiagnostics, normalizeRetryAfterBodyValue } from './lib/runtime-diagnostics-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -3439,7 +3439,6 @@ function extractInteractionArgs(interaction) {
 bot.rest.on('rateLimited', info => {
   const diagnostic = normalizeRateLimitDiagnostics(info);
   runtimeDiagnostics.discord.lastRestRateLimit = diagnostic;
-  runtimeDiagnostics.discord.restRateLimitCount += 1;
   runtimeDiagnostics.discord.lastEventAt = diagnostic.at;
   if (diagnostic.route === 'gateway_bot') {
     runtimeDiagnostics.discord.gatewayStage = 'gateway_rest_rate_limited';
@@ -3449,10 +3448,22 @@ bot.rest.on('rateLimited', info => {
 bot.rest.on('response', (request, response) => {
   const status = Number(response?.status);
   if (!Number.isInteger(status) || status < 400) return;
-  const method = typeof request?.method === 'string' && /^[A-Z]{3,10}$/.test(request.method) ? request.method : 'UNKNOWN';
-  const route = classifyDiscordRestRoute(request?.route || request?.url || request?.path);
-  const timestamp = new Date().toISOString();
-  runtimeDiagnostics.discord.lastRestResponse = { status, method, route, at: timestamp };
+  const diagnostic = normalizeDiscordRestResponseDiagnostics(request, response);
+  runtimeDiagnostics.discord.lastRestResponse = diagnostic;
+  const { route, method, at } = diagnostic;
+  if (status === 429) {
+    runtimeDiagnostics.discord.restRateLimitCount += 1;
+    if (route === 'gateway_bot' && response?.clone && diagnostic.retryAfterMs === null) {
+      // Some responses omit Retry-After but provide retry_after in the JSON body.
+      void response.clone().json().then(body => {
+        const retryAfterMs = normalizeRetryAfterBodyValue(body?.retry_after);
+        if (runtimeDiagnostics.discord.lastRestResponse?.at === at && retryAfterMs !== null) {
+          runtimeDiagnostics.discord.lastRestResponse.retryAfterMs = retryAfterMs;
+          if (typeof body?.global === 'boolean') runtimeDiagnostics.discord.lastRestResponse.global = body.global;
+        }
+      }).catch(() => {});
+    }
+  }
   if (route === 'gateway_bot' && status === 401) {
     runtimeDiagnostics.discord.state = 'auth_rejected';
     runtimeDiagnostics.discord.lastErrorCode = 'HTTP_401';
@@ -3460,7 +3471,17 @@ bot.rest.on('response', (request, response) => {
   } else if (route === 'gateway_bot' && status === 429) {
     runtimeDiagnostics.discord.gatewayStage = 'gateway_rest_rate_limited';
   }
-  console.warn('[discord-rest-http-error]', { status, method, route });
+  console.warn('[discord-rest-http-error]', {
+    status,
+    method,
+    route,
+    ...(status === 429 ? {
+      retryAfterMs: diagnostic.retryAfterMs,
+      resetAfterMs: diagnostic.resetAfterMs,
+      scope: diagnostic.scope,
+      global: diagnostic.global
+    } : {})
+  });
 });
 bot.rest.on('invalidRequestWarning', info => {
   const count = Number(info?.count);
