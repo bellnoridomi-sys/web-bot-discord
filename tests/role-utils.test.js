@@ -137,6 +137,7 @@ import { nextDailyStreak, dailyStreakReward, UTC_DAY_MS } from '../lib/economy-u
 import { normalizeSaleSubmission, canPostSale, normalizeSaleCooldownMinutes } from '../lib/sales-utils.js';
 import { readFileSync } from 'node:fs';
 import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from '../lib/temp-voice-utils.js';
+import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMatchingFaq } from '../lib/tag-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, isRaidJoinBurst } from '../lib/automod-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
@@ -345,4 +346,17 @@ test('Command Lab maps snake_case options to handler argument names', () => {
   assert.equal(commandArgKey('xp-setup', 'ignored_channels'), 'ignoredChannels');
   assert.equal(commandArgKey('temp-voice-setup', 'trigger_channel'), 'triggerChannel');
   assert.equal(commandArgKey('temp-voice-setup', 'user_limit'), 'userLimit');
+});
+
+test('tag and FAQ input are normalized, mentions neutralized, and longest FAQ match wins', () => {
+  assert.equal(normalizeTagName('  Trading Rules  '), 'trading-rules');
+  assert.throws(() => normalizeTagName('@'), /Tên tag/);
+  assert.equal(normalizeFaqKeyword('  HOW   TO TRADE '), 'how to trade');
+  const content = sanitizeCommunityContent('Do not ping <@&123456789012345678>', 1500);
+  assert.equal(content.includes('<@&123456789012345678>'), false);
+  const rule = findMatchingFaq([
+    { keyword: 'trade', response: 'short' },
+    { keyword: 'how to trade', response: 'long' }
+  ], 'Can you explain HOW TO TRADE safely?');
+  assert.equal(rule.response, 'long');
 });

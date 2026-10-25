@@ -109,3 +109,8 @@ Server owners can run `/sell-setup` to choose the listing channel and a per-memb
 ### Temporary voice rooms
 
 Use /temp-voice-setup with enabled=true, a trigger voice channel, and an optional category/user limit. The bot needs Manage Channels, Move Members and Connect; it creates a temporary voice room when a member joins the trigger, moves the member into it, and deletes tracked empty rooms. Empty tracked rooms are reconciled after restart.
+
+
+### Tags and FAQ auto replies
+
+Manage Server staff can use /tag-set and /tag-delete for reusable server snippets, and /faq-set /faq-delete for keyword-based auto replies. Members call /tag name or use the configured prefix. FAQ rules are cached per server, matching the longest keyword first, with a 15-second per-member/per-keyword cooldown. Tag/FAQ content neutralizes user, role and mass mentions.

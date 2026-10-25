@@ -24,6 +24,7 @@ import { SHOP_ITEMS, getShopItem, isSafeShopRole } from './lib/shop-utils.js';
 import { nextDailyStreak, dailyStreakReward } from './lib/economy-utils.js';
 import { normalizeSaleSubmission, canPostSale, normalizeSaleCooldownMinutes } from './lib/sales-utils.js';
 import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from './lib/temp-voice-utils.js';
+import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMatchingFaq } from './lib/tag-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -118,8 +119,12 @@ const memory = {
   suggestions: new Map(),
   suggestionVotes: new Map(),
   saleCooldowns: new Map(),
-  salePosts: []
+  salePosts: [],
+  tags: new Map(),
+  faqRules: new Map()
 };
+const faqRuleCache = new Map();
+const faqResponseCooldowns = new Map();
 let nextGiveawayId = 1;
 let giveawayWorkerRunning = false;
 let nextSuggestionId = 1;
@@ -1275,6 +1280,17 @@ const slashCommands = [
     .addChannelOption(o => o.setName('trigger_channel').setDescription('Kênh voice người dùng vào để tạo phòng').addChannelTypes(ChannelType.GuildVoice).setRequired(false))
     .addChannelOption(o => o.setName('category').setDescription('Category chứa phòng mới (tuỳ chọn)').addChannelTypes(ChannelType.GuildCategory).setRequired(false))
     .addIntegerOption(o => o.setName('user_limit').setDescription('Giới hạn người trong phòng, 0 = không giới hạn').setMinValue(0).setMaxValue(99).setRequired(false)),
+  new SlashCommandBuilder().setName('tag').setDescription('Hiển thị tag của server.').addStringOption(o => o.setName('name').setDescription('Tên tag').setMinLength(2).setMaxLength(32).setRequired(true)),
+  new SlashCommandBuilder().setName('tag-set').setDescription('Tạo hoặc cập nhật tag cho server.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+    .addStringOption(o => o.setName('name').setDescription('Tên tag').setMinLength(2).setMaxLength(32).setRequired(true))
+    .addStringOption(o => o.setName('content').setDescription('Nội dung tag').setMinLength(1).setMaxLength(1500).setRequired(true)),
+  new SlashCommandBuilder().setName('tag-delete').setDescription('Xoá tag khỏi server.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+    .addStringOption(o => o.setName('name').setDescription('Tên tag').setMinLength(2).setMaxLength(32).setRequired(true)),
+  new SlashCommandBuilder().setName('faq-set').setDescription('Thêm/cập nhật FAQ auto-reply.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+    .addStringOption(o => o.setName('keyword').setDescription('Từ hoặc cụm từ cần bắt').setMinLength(2).setMaxLength(60).setRequired(true))
+    .addStringOption(o => o.setName('response').setDescription('Câu trả lời').setMinLength(1).setMaxLength(1500).setRequired(true)),
+  new SlashCommandBuilder().setName('faq-delete').setDescription('Xoá FAQ auto-reply.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+    .addStringOption(o => o.setName('keyword').setDescription('Từ khoá FAQ').setMinLength(2).setMaxLength(60).setRequired(true)),
   new SlashCommandBuilder().setName('xp-setup').setDescription('Cấu hình XP, bỏ qua kênh/role, hệ số và role thưởng.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
     .addBooleanOption(o => o.setName('enabled').setDescription('Bật/tắt XP tin nhắn').setRequired(true))
     .addStringOption(o => o.setName('ignored_channels').setDescription('ID/mention kênh bỏ qua, ngăn cách bằng dấu phẩy').setMaxLength(1000).setRequired(false))
@@ -1302,7 +1318,7 @@ const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Đặt lời nhắc 30m / 2h / 1d'], ['reminders', 'Lời nhắc đang chờ'], ['reminder-cancel', 'Huỷ lời nhắc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
-  ['verify-setup', 'Cổng xác minh / role cách ly'], ['xp-setup', 'Cấu hình XP và role thưởng'], ['automod-setup', 'Cấu hình AutoMod/raid'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['sell', 'Mở form đăng bán'], ['sell-setup', 'Cấu hình kênh đăng bán'], ['temp-voice-setup', 'Tạo voice room tạm'], ['automod-setup', 'Chống spam/mass mention/raid'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
+  ['verify-setup', 'Cổng xác minh / role cách ly'], ['xp-setup', 'Cấu hình XP và role thưởng'], ['automod-setup', 'Cấu hình AutoMod/raid'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['tag', 'Tag FAQ'], ['tag-set', 'Lưu tag'], ['tag-delete', 'Xoá tag'], ['faq-set', 'Cấu hình FAQ'], ['faq-delete', 'Xoá FAQ'], ['sell', 'Mở form đăng bán'], ['sell-setup', 'Cấu hình kênh đăng bán'], ['temp-voice-setup', 'Tạo voice room tạm'], ['tag', 'Hiển thị tag'], ['tag-set', 'Tạo/cập nhật tag'], ['tag-delete', 'Xoá tag'], ['faq-set', 'Cấu hình FAQ auto-reply'], ['faq-delete', 'Xoá FAQ'], ['automod-setup', 'Chống spam/mass mention/raid'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
@@ -2419,6 +2435,86 @@ async function deleteSaleRecord(saleId) {
   }
   memory.salePosts = memory.salePosts.filter(row => String(row.id) !== String(saleId));
 }
+
+async function saveGuildTag(guildId, name, content, createdBy) {
+  if (pool) {
+    const result = await dbQuery(
+      'INSERT INTO guild_tags(guild_id,name,content,created_by) VALUES($1,$2,$3,$4) ON CONFLICT(guild_id,name) DO UPDATE SET content=EXCLUDED.content,created_by=EXCLUDED.created_by,updated_at=NOW() RETURNING name,content,created_by,updated_at',
+      [guildId,name,content,createdBy]
+    );
+    return result.rows[0];
+  }
+  const row = { guild_id:guildId,name,content,created_by:createdBy,updated_at:new Date().toISOString() };
+  memory.tags.set(guildId + ':' + name,row);
+  return row;
+}
+async function getGuildTag(guildId, name) {
+  if (pool) {
+    const result = await dbQuery('SELECT name,content,created_by,updated_at FROM guild_tags WHERE guild_id=$1 AND name=$2',[guildId,name]);
+    return result.rows[0] || null;
+  }
+  return memory.tags.get(guildId + ':' + name) || null;
+}
+async function deleteGuildTag(guildId,name) {
+  if (pool) {
+    const result = await dbQuery('DELETE FROM guild_tags WHERE guild_id=$1 AND name=$2 RETURNING name',[guildId,name]);
+    return Boolean(result.rowCount);
+  }
+  return memory.tags.delete(guildId + ':' + name);
+}
+async function refreshFaqRuleCache(guildId) {
+  let rules;
+  if (pool) {
+    const result = await dbQuery('SELECT guild_id,keyword,response FROM faq_rules WHERE guild_id=$1 ORDER BY LENGTH(keyword) DESC',[guildId]);
+    rules = result.rows;
+  } else {
+    rules = [...memory.faqRules.values()].filter(row => row.guild_id === guildId);
+  }
+  faqRuleCache.set(guildId,rules);
+  return rules;
+}
+async function saveFaqRule(guildId, keyword, response, createdBy) {
+  if (pool) {
+    const result = await dbQuery(
+      'INSERT INTO faq_rules(guild_id,keyword,response,created_by) VALUES($1,$2,$3,$4) ON CONFLICT(guild_id,keyword) DO UPDATE SET response=EXCLUDED.response,created_by=EXCLUDED.created_by,updated_at=NOW() RETURNING keyword,response,created_by,updated_at',
+      [guildId,keyword,response,createdBy]
+    );
+    await refreshFaqRuleCache(guildId);
+    return result.rows[0];
+  }
+  const row = { guild_id:guildId,keyword,response,created_by:createdBy,updated_at:new Date().toISOString() };
+  memory.faqRules.set(guildId + ':' + keyword,row);
+  await refreshFaqRuleCache(guildId);
+  return row;
+}
+async function deleteFaqRule(guildId, keyword) {
+  let deleted;
+  if (pool) {
+    const result = await dbQuery('DELETE FROM faq_rules WHERE guild_id=$1 AND keyword=$2 RETURNING keyword',[guildId,keyword]);
+    deleted = Boolean(result.rowCount);
+  } else {
+    deleted = memory.faqRules.delete(guildId + ':' + keyword);
+  }
+  await refreshFaqRuleCache(guildId);
+  return deleted;
+}
+async function maybeSendFaqReply(message, prefix) {
+  if (!message.guild || !message.content || message.content.startsWith(prefix)) return false;
+  let rules = faqRuleCache.get(message.guild.id);
+  if (!rules) rules = await refreshFaqRuleCache(message.guild.id);
+  const rule = findMatchingFaq(rules,message.content);
+  if (!rule) return false;
+  const now = Date.now();
+  if (faqResponseCooldowns.size > 5000) {
+    for (const [key,stamp] of faqResponseCooldowns) if (now-stamp > 60_000) faqResponseCooldowns.delete(key);
+  }
+  const cooldownKey = message.guild.id + ':' + message.author.id + ':' + rule.keyword;
+  const last = faqResponseCooldowns.get(cooldownKey) || 0;
+  if (now-last < 15_000) return false;
+  faqResponseCooldowns.set(cooldownKey,now);
+  await message.reply({ content: rule.response, allowedMentions: { parse: [] } }).catch(() => {});
+  return true;
+}
 async function runCommand(name, ctx) {
   const { guild, userId, channel, args = {}, source = 'discord' } = ctx;
   const user = await fetchGuildMember(guild, userId);
@@ -2870,6 +2966,42 @@ async function runCommand(name, ctx) {
       await addActivity(guild.id, userId, 'sales:setup', 'Đặt kênh đăng bán #' + targetChannel.name + ' · cooldown ' + cooldown + ' phút.');
       return reply('🛍️ Đã cấu hình kênh đăng bán thành <#' + targetChannel.id + '> với cooldown ' + cooldown + ' phút.');
     }
+    case 'tag': {
+      const tagName = normalizeTagName(args.name);
+      const item = await getGuildTag(guild.id,tagName);
+      if (!item) throw new Error('Không tìm thấy tag "' + tagName + '" trong server.');
+      return { content: item.content, allowedMentions: { parse: [] } };
+    }
+    case 'tag-set': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      const tagName = normalizeTagName(args.name);
+      const content = sanitizeCommunityContent(args.content,1500);
+      await saveGuildTag(guild.id,tagName,content,userId);
+      await addActivity(guild.id,userId,'tag:updated','Đã tạo/cập nhật tag "' + tagName + '".').catch(() => {});
+      return reply('✅ Đã lưu tag "' + tagName + '". Dùng /tag name:' + tagName + ' để xem nội dung.');
+    }
+    case 'tag-delete': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      const tagName = normalizeTagName(args.name);
+      if (!await deleteGuildTag(guild.id,tagName)) throw new Error('Không tìm thấy tag "' + tagName + '".');
+      await addActivity(guild.id,userId,'tag:deleted','Đã xoá tag "' + tagName + '".').catch(() => {});
+      return reply('🗑️ Đã xoá tag "' + tagName + '".');
+    }
+    case 'faq-set': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      const keyword = normalizeFaqKeyword(args.keyword);
+      const response = sanitizeCommunityContent(args.response,1500);
+      await saveFaqRule(guild.id,keyword,response,userId);
+      await addActivity(guild.id,userId,'faq:updated','Đã tạo/cập nhật FAQ keyword "' + keyword + '".').catch(() => {});
+      return reply('✅ Đã lưu FAQ cho từ khoá "' + keyword + '". Rule dài nhất sẽ được ưu tiên nếu nhiều rule cùng khớp.');
+    }
+    case 'faq-delete': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      const keyword = normalizeFaqKeyword(args.keyword);
+      if (!await deleteFaqRule(guild.id,keyword)) throw new Error('Không tìm thấy FAQ cho từ khoá "' + keyword + '".');
+      await addActivity(guild.id,userId,'faq:deleted','Đã xoá FAQ keyword "' + keyword + '".').catch(() => {});
+      return reply('🗑️ Đã xoá FAQ "' + keyword + '".');
+    }
     case 'shop': {
       const profile = await ensureCommunityProfile(guild.id, userId);
       const rows = SHOP_ITEMS.map(item => '**' + item.id + '** · ' + item.roleName + ' · **' + item.price + ' xu**\n' + item.description).join('\n\n');
@@ -3065,6 +3197,11 @@ function extractInteractionArgs(interaction) {
   if (interaction.commandName === 'giveaway-reroll') out.giveawayId = interaction.options.getString('giveaway_id');
   if (interaction.commandName === 'suggest') out.text = interaction.options.getString('text');
   if (interaction.commandName === 'buy') out.item = interaction.options.getString('item');
+  if (interaction.commandName === 'tag') out.name = interaction.options.getString('name');
+  if (interaction.commandName === 'tag-set') { out.name = interaction.options.getString('name'); out.content = interaction.options.getString('content'); }
+  if (interaction.commandName === 'tag-delete') out.name = interaction.options.getString('name');
+  if (interaction.commandName === 'faq-set') { out.keyword = interaction.options.getString('keyword'); out.response = interaction.options.getString('response'); }
+  if (interaction.commandName === 'faq-delete') out.keyword = interaction.options.getString('keyword');
   if (interaction.commandName === 'suggest-setup') out.channel = interaction.options.getChannel('channel')?.id;
   if (interaction.commandName === 'xp-setup') {
     out.enabled = interaction.options.getBoolean('enabled');
@@ -3367,6 +3504,10 @@ bot.on('messageCreate', async message => {
     }
     const cfg = await getConfig(message.guild.id);
     const prefix = cfg.prefix || '!';
+    if (!message.content.startsWith(prefix)) {
+      try { await maybeSendFaqReply(message,prefix); }
+      catch (error) { void reportRuntimeError(error,'faq-auto-reply',message.guild.id); }
+    }
     if (!message.content.startsWith(prefix) && message.content.trim().length >= 4) {
       try {
         const xpSettings = await getGuildXpSettings(message.guild.id);
@@ -3394,7 +3535,7 @@ bot.on('messageCreate', async message => {
     const [name, ...parts] = message.content.slice(prefix.length).trim().split(/\s+/);
     if (!name || !commands.some(c => c.name === name)) return;
     const basicMap = {
-      ping: {}, help: {}, server: {}, botinfo: {}, shop: {}, coinflip: {},
+      ping: {}, help: {}, server: {}, botinfo: {}, shop: {}, tag: { name: parts.join(' ') }, coinflip: {},
       '8ball': { question: parts.join(' ') }, roll: { sides: Number(parts[0]) || 6 }, remind: { duration: parts[0], text: parts.slice(1).join(' ') },
       announce: { message: parts.join(' ') }, clear: { amount: Number(parts[0]) }, slowmode: { seconds: Number(parts[0]) }, lock: {}, unlock: {},
       rank: {}, balance: {}, daily: {}, work: {}, buy: { item: parts[0] }, leaderboard: { kind: parts[0] === 'coins' ? 'coins' : 'levels' },
