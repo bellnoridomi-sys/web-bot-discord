@@ -131,6 +131,7 @@ import { isAccountTooNew } from '../lib/verification-utils.js';
 import { drawUniqueWinners } from '../lib/giveaway-utils.js';
 import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from '../lib/suggestion-utils.js';
 import { SHOP_ITEMS, getShopItem, isSafeShopRole } from '../lib/shop-utils.js';
+import { nextDailyStreak, dailyStreakReward, UTC_DAY_MS } from '../lib/economy-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
   assert.equal(parseDuration('2h'), 7200);
@@ -219,4 +220,17 @@ test('shop sells only unmanaged no-permission roles below bot', () => {
   assert.equal(isSafeShopRole({ ...role, permissions: { bitfield: 8n } }, '1', 3), false);
   assert.equal(isSafeShopRole(role, '22', 3), false);
   assert.equal(isSafeShopRole({ ...role, position: 3 }, '1', 3), false);
+});
+
+test('daily streak is based on consecutive UTC dates and resets after a missed day', () => {
+  const day = UTC_DAY_MS;
+  assert.equal(nextDailyStreak(0, 0, day * 10), 1);
+  assert.equal(nextDailyStreak(day * 10 + 100, 2, day * 11 + 200), 3);
+  assert.equal(nextDailyStreak(day * 10 + 100, 6, day * 12 + 200), 1);
+});
+test('daily streak reward bonus grows and caps', () => {
+  assert.equal(dailyStreakReward(1), 100);
+  assert.equal(dailyStreakReward(2), 125);
+  assert.equal(dailyStreakReward(7), 250);
+  assert.equal(dailyStreakReward(30), 250);
 });

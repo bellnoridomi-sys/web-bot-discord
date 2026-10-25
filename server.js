@@ -19,6 +19,7 @@ import { isAccountTooNew } from './lib/verification-utils.js';
 import { drawUniqueWinners } from './lib/giveaway-utils.js';
 import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from './lib/suggestion-utils.js';
 import { SHOP_ITEMS, getShopItem, isSafeShopRole } from './lib/shop-utils.js';
+import { nextDailyStreak, dailyStreakReward } from './lib/economy-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
@@ -541,11 +542,11 @@ const WORK_COOLDOWN_MS = 60 * 60_000;
 async function ensureCommunityProfile(guildId, userId) {
   if (pool) {
     await dbQuery('INSERT INTO community_profiles(guild_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [guildId, userId]);
-    const result = await dbQuery('SELECT guild_id,user_id,xp,level,coins,last_daily,last_work FROM community_profiles WHERE guild_id=$1 AND user_id=$2', [guildId, userId]);
+    const result = await dbQuery('SELECT guild_id,user_id,xp,level,coins,last_daily,last_work,daily_streak FROM community_profiles WHERE guild_id=$1 AND user_id=$2', [guildId, userId]);
     return result.rows[0];
   }
   const key = `${guildId}:${userId}`;
-  if (!memory.communityProfiles.has(key)) memory.communityProfiles.set(key, { guild_id: guildId, user_id: userId, xp: 0, level: 0, coins: 0, last_daily: 0, last_work: 0 });
+  if (!memory.communityProfiles.has(key)) memory.communityProfiles.set(key, { guild_id: guildId, user_id: userId, xp: 0, level: 0, coins: 0, last_daily: 0, last_work: 0, daily_streak: 0 });
   return memory.communityProfiles.get(key);
 }
 
@@ -580,8 +581,33 @@ async function claimCommunityCoins(guildId, userId, type) {
   const now = Date.now();
   const cooldown = isDaily ? DAILY_COOLDOWN_MS : WORK_COOLDOWN_MS;
   const column = isDaily ? 'last_daily' : 'last_work';
-  const reward = isDaily ? COINS_DAILY_AMOUNT : COINS_WORK_MIN + Math.floor(Math.random() * (COINS_WORK_MAX - COINS_WORK_MIN + 1));
+  const workReward = COINS_WORK_MIN + Math.floor(Math.random() * (COINS_WORK_MAX - COINS_WORK_MIN + 1));
   await ensureCommunityProfile(guildId, userId);
+  if (pool && isDaily) {
+    const result = await dbQuery(`
+      UPDATE community_profiles
+      SET coins=coins+$1 + CASE
+            WHEN last_daily > 0 AND FLOOR($2::numeric / 86400000) - FLOOR(last_daily::numeric / 86400000)=1
+            THEN LEAST(daily_streak,6)*25 ELSE 0 END,
+          last_daily=$2,
+          daily_streak=CASE
+            WHEN last_daily=0 THEN 1
+            WHEN FLOOR($2::numeric / 86400000) - FLOOR(last_daily::numeric / 86400000)=1 THEN daily_streak+1
+            ELSE 1 END,
+          updated_at=NOW()
+      WHERE guild_id=$3 AND user_id=$4 AND last_daily <= $5
+      RETURNING coins,daily_streak
+    `, [COINS_DAILY_AMOUNT, now, guildId, userId, now - cooldown]);
+    if (result.rowCount) {
+      const streak = Number(result.rows[0].daily_streak) || 1;
+      return { ok: true, reward: dailyStreakReward(streak, COINS_DAILY_AMOUNT), streak, coins: Number(result.rows[0].coins), nextAt: now + cooldown };
+    }
+    const profile = await ensureCommunityProfile(guildId, userId);
+    return { ok: false, coins: Number(profile.coins), streak: Number(profile.daily_streak) || 0, nextAt: Number(profile[column]) + cooldown };
+  }
+  const reward = isDaily
+    ? null
+    : workReward;
   if (pool) {
     const result = await dbQuery(`UPDATE community_profiles SET coins=coins+$1, ${column}=$2, updated_at=NOW() WHERE guild_id=$3 AND user_id=$4 AND ${column} <= $5 RETURNING coins`, [reward, now, guildId, userId, now - cooldown]);
     if (result.rowCount) return { ok: true, reward, coins: Number(result.rows[0].coins), nextAt: now + cooldown };
@@ -589,7 +615,15 @@ async function claimCommunityCoins(guildId, userId, type) {
     return { ok: false, coins: Number(profile.coins), nextAt: Number(profile[column]) + cooldown };
   }
   const profile = await ensureCommunityProfile(guildId, userId);
-  if (now - Number(profile[column] || 0) < cooldown) return { ok: false, coins: Number(profile.coins), nextAt: Number(profile[column]) + cooldown };
+  if (now - Number(profile[column] || 0) < cooldown) return { ok: false, coins: Number(profile.coins), streak: Number(profile.daily_streak) || 0, nextAt: Number(profile[column]) + cooldown };
+  if (isDaily) {
+    const streak = nextDailyStreak(profile.last_daily, profile.daily_streak, now);
+    const dailyReward = dailyStreakReward(streak, COINS_DAILY_AMOUNT);
+    profile.coins = Number(profile.coins || 0) + dailyReward;
+    profile.last_daily = now;
+    profile.daily_streak = streak;
+    return { ok: true, reward: dailyReward, streak, coins: profile.coins, nextAt: now + cooldown };
+  }
   profile.coins = Number(profile.coins || 0) + reward;
   profile[column] = now;
   return { ok: true, reward, coins: profile.coins, nextAt: now + cooldown };
@@ -2072,7 +2106,7 @@ async function runCommand(name, ctx) {
     case 'daily': {
       const result = await claimCommunityCoins(guild.id, userId, 'daily');
       if (!result.ok) return reply('⏳ Bạn đã nhận daily rồi. Nhận lại ' + `<t:${Math.ceil(result.nextAt / 1000)}:R>` + '.');
-      return reply('🌞 Bạn nhận được **+' + result.reward + ' xu**! Số dư: **' + result.coins.toLocaleString('en-US') + ' xu**.');
+      return reply('🌞 Bạn nhận được **+' + result.reward + ' xu**! Streak: **' + result.streak + ' ngày**. Số dư: **' + result.coins.toLocaleString('en-US') + ' xu**.');
     }
     case 'work': {
       const result = await claimCommunityCoins(guild.id, userId, 'work');

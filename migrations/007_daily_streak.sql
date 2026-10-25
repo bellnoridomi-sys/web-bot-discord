@@ -1,0 +1,1 @@
+ALTER TABLE community_profiles ADD COLUMN IF NOT EXISTS daily_streak INTEGER NOT NULL DEFAULT 0;
