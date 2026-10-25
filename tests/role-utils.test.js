@@ -173,5 +173,5 @@ test('pagination is bounded and produces deterministic offsets', () => {
 test('CSV export quotes delimiters and neutralizes spreadsheet formulas', () => {
   assert.equal(csvCell('plain, "quoted"'), '"plain, ""quoted"""');
   assert.equal(csvCell('=CMD()'), '"\'=CMD()"');
-  assert.equal(csvCell('hello\\nworld'), '"hello world"');
+  assert.equal(csvCell('hello' + String.fromCharCode(10) + 'world'), '"hello world"');
 });
