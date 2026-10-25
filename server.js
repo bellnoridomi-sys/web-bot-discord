@@ -1498,6 +1498,43 @@ async function handleAkiButton(interaction) {
   const customId = interaction.customId || '';
   if (!customId.startsWith('aki:') || !interaction.guild) return false;
   const guild = interaction.guild;
+  if (customId === 'aki:verify:member') {
+    await interaction.deferReply({ ephemeral: true });
+    const config = await getConfig(guild.id);
+    if (!config.verification_enabled || config.verification_message_id !== interaction.message?.id || config.verification_channel_id !== interaction.channelId) {
+      await interaction.editReply({ content: 'Panel xác minh không còn hiệu lực. Hãy dùng panel mới nhất hoặc liên hệ staff.' });
+      return true;
+    }
+    const member = await guild.members.fetch(interaction.user.id);
+    const minDays = Math.min(365, Math.max(0, Number(config.verification_min_account_days) || 0));
+    if (isAccountTooNew(member.user.createdTimestamp, minDays)) {
+      const quarantine = config.verification_quarantine_role_id ? await guild.roles.fetch(config.verification_quarantine_role_id).catch(() => null) : null;
+      if (quarantine && !member.roles.cache.has(quarantine.id)) {
+        const me = guild.members.me || await guild.members.fetchMe();
+        if (!me.permissions.has(PermissionFlagsBits.ManageRoles) || quarantine.managed || quarantine.id === guild.id || quarantine.position >= me.roles.highest.position) {
+          await interaction.editReply({ content: 'Tài khoản chưa đủ tuổi và bot chưa thể gán role cách ly. Hãy liên hệ staff.' });
+          return true;
+        }
+        await member.roles.add(quarantine, 'Verification gate: account too new');
+      }
+      const readyAt = Number(member.user.createdTimestamp) + minDays * 24 * 60 * 60 * 1000;
+      await interaction.editReply({ content: '⏳ Tài khoản Discord của bạn còn quá mới. Hãy thử xác minh lại sau <t:' + Math.ceil(readyAt / 1000) + ':R>. Bạn chưa được cấp role Member.' });
+      await addActivity(guild.id, member.id, 'verification:quarantined', 'Account age below ' + minDays + ' day threshold.').catch(() => {});
+      return true;
+    }
+    const verifiedRole = config.verification_role_id ? await guild.roles.fetch(config.verification_role_id).catch(() => null) : null;
+    const quarantine = config.verification_quarantine_role_id ? await guild.roles.fetch(config.verification_quarantine_role_id).catch(() => null) : null;
+    const me = guild.members.me || await guild.members.fetchMe();
+    if (!verifiedRole || verifiedRole.managed || verifiedRole.id === guild.id || !me.permissions.has(PermissionFlagsBits.ManageRoles) || verifiedRole.position >= me.roles.highest.position) {
+      await interaction.editReply({ content: 'Role Member chưa hợp lệ hoặc bot thiếu quyền Manage Roles. Hãy báo staff.' });
+      return true;
+    }
+    if (!member.roles.cache.has(verifiedRole.id)) await member.roles.add(verifiedRole, 'Aki verification completed');
+    if (quarantine && member.roles.cache.has(quarantine.id)) await member.roles.remove(quarantine, 'Aki verification completed');
+    await interaction.editReply({ content: '✅ Xác minh thành công. Bạn đã nhận role ' + verifiedRole.name + '.' });
+    await addActivity(guild.id, member.id, 'verification:success', 'Đã xác minh và nhận ' + verifiedRole.name + '.').catch(() => {});
+    return true;
+  }
   if (customId.startsWith('aki:rr:')) {
     await interaction.deferReply({ ephemeral: true });
     const key = customId.slice('aki:rr:'.length);
@@ -2299,18 +2336,38 @@ bot.on('guildMemberAdd', async member => {
     if (cfg?.welcome_channel_id) {
       const channel = await member.guild.channels.fetch(cfg.welcome_channel_id).catch(() => null);
       if (!channel?.isTextBased?.()) throw new Error('Kênh welcome đã bị xoá hoặc không phải kênh text.');
-      await channel.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setTitle('👋 Chào mừng thành viên mới!').setDescription('Chào mừng ' + member.toString() + ' đến với **' + member.guild.name + '**!\nHãy đọc nội quy và chọn role phù hợp nhé.').setThumbnail(member.user.displayAvatarURL({ size: 256 })).setTimestamp()], allowedMentions: { users: [member.id] } });
+      const welcomeNextStep = cfg?.verification_enabled && cfg.verification_channel_id
+        ? 'Hãy đến <#' + cfg.verification_channel_id + '> và nhấn nút xác minh để nhận role Member.'
+        : 'Hãy đọc nội quy và chọn role phù hợp nhé.';
+      await channel.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setTitle('👋 Chào mừng thành viên mới!').setDescription('Chào mừng ' + member.toString() + ' đến với **' + member.guild.name + '**!\n' + welcomeNextStep).setThumbnail(member.user.displayAvatarURL({ size: 256 })).setTimestamp()], allowedMentions: { users: [member.id] } });
     }
   } catch (error) { void reportRuntimeError(error, 'welcome-message', member.guild.id); }
   try {
-    const role = cfg?.auto_role_id ? await member.guild.roles.fetch(cfg.auto_role_id).catch(() => null) : null;
-    const fallbackRole = role || member.guild.roles.cache.find(r => r.name === '👥 Member') || null;
-    if (fallbackRole) {
-      const me = member.guild.members.me || await member.guild.members.fetchMe();
-      if (!me.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Bot thiếu quyền Manage Roles để cấp auto-role.');
-      if (fallbackRole.position >= me.roles.highest.position) throw new Error('Role auto-role đang ở trên role cao nhất của bot.');
-      await member.roles.add(fallbackRole, 'Aki automatic join role');
-      autoRoleName = fallbackRole.name;
+    if (cfg?.verification_enabled) {
+      const minDays = Math.min(365, Math.max(0, Number(cfg.verification_min_account_days) || 0));
+      const tooNew = isAccountTooNew(member.user.createdTimestamp, minDays);
+      const quarantine = tooNew && cfg.verification_quarantine_role_id
+        ? await member.guild.roles.fetch(cfg.verification_quarantine_role_id).catch(() => null) : null;
+      if (tooNew && minDays > 0 && !quarantine) throw new Error('Verification is enabled, but quarantine role is missing.');
+      if (quarantine) {
+        const me = member.guild.members.me || await member.guild.members.fetchMe();
+        if (!me.permissions.has(PermissionFlagsBits.ManageRoles) || quarantine.position >= me.roles.highest.position) throw new Error('Bot cannot manage the configured quarantine role.');
+        await member.roles.add(quarantine, 'Verification gate: account too new');
+        autoRoleName = quarantine.name + ' (quarantine)';
+      } else {
+        autoRoleName = 'verification-pending';
+      }
+      // When the gate is enabled, Member is never auto-assigned on join; the verified button grants it later.
+    } else {
+      const role = cfg?.auto_role_id ? await member.guild.roles.fetch(cfg.auto_role_id).catch(() => null) : null;
+      const fallbackRole = role || member.guild.roles.cache.find(r => r.name === '👥 Member') || null;
+      if (fallbackRole) {
+        const me = member.guild.members.me || await member.guild.members.fetchMe();
+        if (!me.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Bot thiếu quyền Manage Roles để cấp auto-role.');
+        if (fallbackRole.position >= me.roles.highest.position) throw new Error('Role auto-role đang ở trên role cao nhất của bot.');
+        await member.roles.add(fallbackRole, 'Aki automatic join role');
+        autoRoleName = fallbackRole.name;
+      }
     }
   } catch (error) { void reportRuntimeError(error, 'auto-role-assignment', member.guild.id); }
   await addActivity(member.guild.id, member.id, 'member:join', `👋 ${member.user.globalName || member.user.username} đã tham gia server.` + (autoRoleName ? ` · auto-role: ${autoRoleName}` : '')).catch(() => {});
