@@ -139,6 +139,7 @@ import { readFileSync } from 'node:fs';
 import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from '../lib/temp-voice-utils.js';
 import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMatchingFaq } from '../lib/tag-utils.js';
 import { normalizePage, slicePage } from '../lib/page-utils.js';
+import { keepsCommandResultPrivate, summarizeCommandResult } from '../lib/command-routing-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, isRaidJoinBurst } from '../lib/automod-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
@@ -372,4 +373,14 @@ test('warning page controls re-check moderator rights and leaderboard controls a
   assert.ok(source.includes("customId.match(/^aki:warnings:([0-9]{17,20}):([0-9]{1,6})$/)"));
   assert.ok(source.includes("actor.permissions.has(PermissionFlagsBits.ModerateMembers)"));
   assert.ok(source.includes("customId.match(/^aki:leaderboard:(levels|coins):([0-9]{1,6})$/)"));
+});
+
+test('web command routing keeps ephemeral moderation and personal results inside dashboard', () => {
+  for (const name of ['warnings','modlog','case','reminders','reminder-cancel','scamcheck','scam-add','clear','role-panel','ticket-setup']) {
+    assert.equal(keepsCommandResultPrivate(name), true, name);
+  }
+  assert.equal(keepsCommandResultPrivate('poll'), false);
+  assert.equal(keepsCommandResultPrivate('/ping'), false);
+  assert.equal(summarizeCommandResult('done'), 'done');
+  assert.equal(summarizeCommandResult({ embeds:[{data:{title:'Title',description:'Description',fields:[{name:'Count',value:'4'}]}}] }), 'Title\\nDescription\\nCount: 4');
 });

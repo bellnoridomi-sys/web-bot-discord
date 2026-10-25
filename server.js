@@ -26,6 +26,7 @@ import { normalizeSaleSubmission, canPostSale, normalizeSaleCooldownMinutes } fr
 import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from './lib/temp-voice-utils.js';
 import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMatchingFaq } from './lib/tag-utils.js';
 import { normalizePage, slicePage } from './lib/page-utils.js';
+import { keepsCommandResultPrivate, summarizeCommandResult } from './lib/command-routing-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -4228,12 +4229,20 @@ app.post('/api/guilds/:guildId/command', requireAuth, async (req, res) => {
     const actorId = discordActorId(req.session);
     if (!actorId) return res.status(409).json({ error: 'DISCORD_LINK_REQUIRED' });
     const payload = await runCommand(name, { guild, userId: actorId, userName: req.session.user.username, channel, args, source: 'web' });
-    const sendable = channel?.isTextBased?.() && payload;
+    const privateResult = keepsCommandResultPrivate(name);
+    const sendable = channel?.isTextBased?.() && payload && !privateResult;
     let sent = null;
     if (sendable) sent = await channel.send(payload);
-    if (sent && name === 'poll') await addPollReactions(sent, [args.option1,args.option2,args.option3,args.option4].filter(Boolean).length);
-    await addActivity(guild.id, req.session.user.id, `web:${name}`, `✅ Chạy từ dashboard bởi ${req.session.user.username || 'user'} tại #${channel?.name || 'unknown-channel'}.`);
-    res.json({ ok: true, command: name, payload: typeof payload === 'string' ? payload : 'embed', channelId: sent?.channelId || channel?.id || null, messageId: sent?.id || null });
+    await addActivity(guild.id, actorId, `web:${name}`, (privateResult ? '✅ Lệnh được xử lý riêng trong dashboard bởi ' : '✅ Chạy từ dashboard bởi ') + `${req.session.user.username || 'user'} tại #${channel?.name || 'unknown-channel'}.`);
+    res.json({
+      ok: true,
+      command: name,
+      payload: privateResult ? summarizeCommandResult(payload) : (typeof payload === 'string' ? payload : 'embed'),
+      privateResult,
+      delivery: privateResult ? 'dashboard-only' : 'discord-channel',
+      channelId: sent?.channelId || channel?.id || null,
+      messageId: sent?.id || null
+    });
   } catch (error) { void reportRuntimeError(error, 'api:command', req.params.guildId); res.status(error.status || 500).json({ error: error.message }); }
 });
 
