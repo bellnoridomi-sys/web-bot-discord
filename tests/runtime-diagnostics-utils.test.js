@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { safeRuntimeErrorCode, classifyGatewayDebugMessage, classifyDiscordRestRoute, normalizeRateLimitDiagnostics, normalizeDiscordRestResponseDiagnostics, normalizeRetryAfterBodyValue } from '../lib/runtime-diagnostics-utils.js';
+import { safeRuntimeErrorCode, classifyGatewayDebugMessage, classifyDiscordRestRoute, normalizeRateLimitDiagnostics, normalizeDiscordRestResponseDiagnostics, normalizeRetryAfterBodyValue, normalizeDiscordRestErrorBody } from '../lib/runtime-diagnostics-utils.js';
 
 test('runtime diagnostics expose a safe error code rather than an error message', () => {
   assert.equal(safeRuntimeErrorCode({ code: 4014, message: 'raw token=secret-value' }), '4014');
@@ -84,7 +84,11 @@ test('HTTP 429 diagnostics capture safe Retry-After and rate-limit scope headers
     retryAfterMs: 12500,
     resetAfterMs: 12250,
     scope: 'global',
-    global: true
+    global: true,
+    contentType: 'unknown',
+    edgeServer: 'unknown',
+    cfRayPresent: false,
+    cfMitigated: false
   });
 });
 
@@ -101,9 +105,47 @@ test('HTTP diagnostics handle missing/invalid headers without exposing raw value
     retryAfterMs: null,
     resetAfterMs: null,
     scope: 'unknown',
-    global: false
+    global: false,
+    contentType: 'unknown',
+    edgeServer: 'unknown',
+    cfRayPresent: false,
+    cfMitigated: false
   });
   assert.equal(normalizeRetryAfterBodyValue(3.25), 3250);
   assert.equal(normalizeRetryAfterBodyValue('bad'), null);
   assert.equal(normalizeRetryAfterBodyValue(-1), null);
+});
+
+
+test('429 error body diagnostics expose only safe, categorized metadata', () => {
+  assert.deepEqual(normalizeDiscordRestErrorBody({
+    message: 'You are being rate limited.',
+    code: 20028,
+    global: false,
+    retry_after: 3507
+  }), {
+    bodyFormat: 'json',
+    bodyMessageClass: 'rate_limited',
+    discordErrorCode: 20028,
+    bodyGlobal: false,
+    bodyRetryAfterMs: 3507000
+  });
+  assert.deepEqual(normalizeDiscordRestErrorBody({
+    message: 'Access denied due to Cloudflare restriction',
+    code: '1015',
+    global: true
+  }), {
+    bodyFormat: 'json',
+    bodyMessageClass: 'possible_edge_restriction',
+    discordErrorCode: 1015,
+    bodyGlobal: true,
+    bodyRetryAfterMs: null
+  });
+  assert.deepEqual(normalizeDiscordRestErrorBody('<html>blocked</html>'), {
+    bodyFormat: 'non_json_or_unreadable',
+    bodyMessageClass: 'unknown',
+    discordErrorCode: null,
+    bodyGlobal: null,
+    bodyRetryAfterMs: null
+  });
 });
