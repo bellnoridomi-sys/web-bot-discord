@@ -17,6 +17,7 @@ import { buildNativePollPayload } from './lib/poll-utils.js';
 import { parsePagination, csvCell } from './lib/activity-utils.js';
 import { isAccountTooNew } from './lib/verification-utils.js';
 import { drawUniqueWinners } from './lib/giveaway-utils.js';
+import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from './lib/suggestion-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
@@ -102,10 +103,13 @@ const memory = {
   tempBans: new Map(),
   reminders: [],
   giveaways: new Map(),
-  giveawayEntries: new Map()
+  giveawayEntries: new Map(),
+  suggestions: new Map(),
+  suggestionVotes: new Map()
 };
 let nextGiveawayId = 1;
 let giveawayWorkerRunning = false;
+let nextSuggestionId = 1;
 
 const databaseHost = (() => { try { return new URL(process.env.DATABASE_URL || '').hostname; } catch { return ''; } })();
 const pool = process.env.DATABASE_URL
@@ -172,7 +176,8 @@ async function getConfig(guildId) {
     verification_message_id: null,
     verification_role_id: null,
     verification_quarantine_role_id: null,
-    verification_min_account_days: 0
+    verification_min_account_days: 0,
+    suggestion_channel_id: null
   });
   return memory.configs.get(guildId);
 }
@@ -186,8 +191,8 @@ async function setConfig(guildId, patch) {
         guild_id, auto_voice_enabled, auto_voice_channel_id, prefix, log_channel_id, auto_role_id,
         welcome_channel_id, goodbye_channel_id, verification_enabled, verification_channel_id,
         verification_message_id, verification_role_id, verification_quarantine_role_id,
-        verification_min_account_days, updated_at
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+        verification_min_account_days, suggestion_channel_id, updated_at
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
       ON CONFLICT(guild_id) DO UPDATE SET
         auto_voice_enabled=EXCLUDED.auto_voice_enabled,
         auto_voice_channel_id=EXCLUDED.auto_voice_channel_id,
@@ -202,6 +207,7 @@ async function setConfig(guildId, patch) {
         verification_role_id=EXCLUDED.verification_role_id,
         verification_quarantine_role_id=EXCLUDED.verification_quarantine_role_id,
         verification_min_account_days=EXCLUDED.verification_min_account_days,
+        suggestion_channel_id=EXCLUDED.suggestion_channel_id,
         updated_at=NOW()
     `, [
       guildId, Boolean(next.auto_voice_enabled), next.auto_voice_channel_id || null,
@@ -209,7 +215,8 @@ async function setConfig(guildId, patch) {
       next.welcome_channel_id || null, next.goodbye_channel_id || null,
       Boolean(next.verification_enabled), next.verification_channel_id || null,
       next.verification_message_id || null, next.verification_role_id || null,
-      next.verification_quarantine_role_id || null, Math.min(365, Math.max(0, Number(next.verification_min_account_days) || 0))
+      next.verification_quarantine_role_id || null, Math.min(365, Math.max(0, Number(next.verification_min_account_days) || 0)),
+      next.suggestion_channel_id || null
     ]);
   } else memory.configs.set(guildId, next);
   return next;
@@ -1104,7 +1111,10 @@ const slashCommands = [
     .addRoleOption(o => o.setName('required_role').setDescription('Role bắt buộc (tuỳ chọn)').setRequired(false))
     .addIntegerOption(o => o.setName('required_level').setDescription('Level tối thiểu (tuỳ chọn)').setMinValue(0).setMaxValue(1000).setRequired(false)),
   new SlashCommandBuilder().setName('giveaway-reroll').setDescription('Chọn lại người thắng giveaway đã kết thúc.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
-    .addStringOption(o => o.setName('giveaway_id').setDescription('ID giveaway').setMinLength(1).setMaxLength(20).setRequired(true))
+    .addStringOption(o => o.setName('giveaway_id').setDescription('ID giveaway').setMinLength(1).setMaxLength(20).setRequired(true)),
+  new SlashCommandBuilder().setName('suggest').setDescription('Đề xuất ý tưởng cho server.').addStringOption(o => o.setName('text').setDescription('Nội dung góp ý').setMinLength(5).setMaxLength(1500).setRequired(true)),
+  new SlashCommandBuilder().setName('suggest-setup').setDescription('Chọn kênh đăng góp ý.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+    .addChannelOption(o => o.setName('channel').setDescription('Kênh nhận góp ý').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
 ].map(c => c.toJSON());
 const contextMenuCommands = [
   new ContextMenuCommandBuilder().setName('Userinfo').setType(ApplicationCommandType.User),
@@ -1117,7 +1127,7 @@ const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Đặt lời nhắc 30m / 2h / 1d'], ['reminders', 'Lời nhắc đang chờ'], ['reminder-cancel', 'Huỷ lời nhắc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
-  ['verify-setup', 'Cổng xác minh / role cách ly'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
+  ['verify-setup', 'Cổng xác minh / role cách ly'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
@@ -1584,6 +1594,45 @@ async function handleAkiButton(interaction) {
     await addActivity(guild.id, member.id, 'verification:success', 'Đã xác minh và nhận ' + verifiedRole.name + '.').catch(() => {});
     return true;
   }
+  const suggestionMatch = customId.match(/^aki:suggest:(up|down|approve|reject):([0-9]{1,20})$/);
+  if (suggestionMatch) {
+    await interaction.deferReply({ ephemeral: true });
+    const action = suggestionMatch[1], suggestionId = suggestionMatch[2];
+    const suggestion = await getSuggestion(guild.id, suggestionId);
+    if (!suggestion || suggestion.message_id !== interaction.message?.id) {
+      await interaction.editReply({ content: 'Góp ý này không còn hợp lệ.' });
+      return true;
+    }
+    if (action === 'up' || action === 'down') {
+      if (suggestion.status !== 'pending') {
+        await interaction.editReply({ content: 'Góp ý đã được đội ngũ xử lý; vote đã khoá.' });
+        return true;
+      }
+      const saved = await setSuggestionVote(guild.id, suggestionId, interaction.user.id, action);
+      if (!saved) {
+        await interaction.editReply({ content: 'Không thể ghi vote; góp ý có thể đã được xử lý.' });
+        return true;
+      }
+      await syncSuggestionMessage(await getSuggestion(guild.id, suggestionId));
+      await interaction.editReply({ content: '✅ Vote của bạn đã được ghi nhận. Mỗi người chỉ có một vote; chọn nút khác sẽ đổi vote.' });
+      return true;
+    }
+    const actor = await fetchGuildMember(guild, interaction.user.id);
+    if (!actor || (actor.id !== guild.ownerId && !actor.permissions.has(PermissionFlagsBits.ManageGuild) && !actor.permissions.has(PermissionFlagsBits.ManageMessages))) {
+      await interaction.editReply({ content: 'Chỉ staff có quyền Manage Server hoặc Manage Messages mới được duyệt góp ý.' });
+      return true;
+    }
+    const status = action === 'approve' ? 'approved' : 'rejected';
+    const reviewed = await reviewSuggestion(guild.id, suggestionId, actor.id, status);
+    if (!reviewed) {
+      await interaction.editReply({ content: 'Góp ý này đã được xử lý bởi staff khác.' });
+      return true;
+    }
+    await syncSuggestionMessage(reviewed);
+    await interaction.editReply({ content: status === 'approved' ? '✅ Đã duyệt góp ý #' + suggestionId + '.' : 'Đã từ chối góp ý #' + suggestionId + '.' });
+    await addActivity(guild.id, actor.id, 'suggestion:' + status, 'Đã ' + (status === 'approved' ? 'duyệt' : 'từ chối') + ' góp ý #' + suggestionId + '.').catch(() => {});
+    return true;
+  }
   if (customId.startsWith('aki:giveaway:enter:')) {
     await interaction.deferReply({ ephemeral: true });
     const giveawayId = customId.slice('aki:giveaway:enter:'.length);
@@ -1839,6 +1888,109 @@ async function giveawayTick() {
   } finally {
     giveawayWorkerRunning = false;
   }
+}
+
+async function createSuggestion(data) {
+  if (pool) {
+    const result = await dbQuery(
+      'INSERT INTO suggestions(guild_id,channel_id,created_by,text) VALUES($1,$2,$3,$4) RETURNING *',
+      [data.guild_id,data.channel_id,data.created_by,data.text]
+    );
+    return result.rows[0];
+  }
+  const row = { id: String(nextSuggestionId++), ...data, message_id: null, status: 'pending', created_at: new Date().toISOString(), reviewed_by: null, reviewed_at: null };
+  memory.suggestions.set(String(row.id), row);
+  return row;
+}
+async function getSuggestion(guildId, suggestionId) {
+  if (pool) {
+    const result = await dbQuery('SELECT * FROM suggestions WHERE guild_id=$1 AND id=$2', [guildId,suggestionId]);
+    return result.rows[0] || null;
+  }
+  const row = memory.suggestions.get(String(suggestionId));
+  return row?.guild_id === guildId ? row : null;
+}
+async function setSuggestionMessageId(guildId, suggestionId, messageId) {
+  if (pool) {
+    await dbQuery('UPDATE suggestions SET message_id=$1 WHERE guild_id=$2 AND id=$3', [messageId,guildId,suggestionId]);
+    return;
+  }
+  const row = memory.suggestions.get(String(suggestionId));
+  if (row && row.guild_id === guildId) row.message_id = messageId;
+}
+async function setSuggestionVote(guildId, suggestionId, userId, vote) {
+  if (!isSuggestionVote(vote)) throw new Error('Vote không hợp lệ.');
+  if (pool) {
+    const result = await dbQuery(
+      "INSERT INTO suggestion_votes(suggestion_id,user_id,vote) SELECT id,$3,$4 FROM suggestions WHERE guild_id=$1 AND id=$2 AND status='pending' ON CONFLICT(suggestion_id,user_id) DO UPDATE SET vote=EXCLUDED.vote,updated_at=NOW() RETURNING vote",
+      [guildId,suggestionId,userId,vote]
+    );
+    return Boolean(result.rowCount);
+  }
+  const suggestion = await getSuggestion(guildId,suggestionId);
+  if (!suggestion || suggestion.status !== 'pending') return false;
+  memory.suggestionVotes.set(String(suggestionId) + ':' + userId, vote);
+  return true;
+}
+async function getSuggestionCounts(suggestionId) {
+  if (pool) {
+    const result = await dbQuery('SELECT vote,COUNT(*)::int AS count FROM suggestion_votes WHERE suggestion_id=$1 GROUP BY vote', [suggestionId]);
+    const counts = { up: 0, down: 0 };
+    for (const row of result.rows) if (row.vote === 'up' || row.vote === 'down') counts[row.vote] = Number(row.count) || 0;
+    return counts;
+  }
+  const counts = { up: 0, down: 0 };
+  for (const [key,vote] of memory.suggestionVotes) {
+    if (key.startsWith(String(suggestionId) + ':') && isSuggestionVote(vote)) counts[vote]++;
+  }
+  return counts;
+}
+async function reviewSuggestion(guildId, suggestionId, reviewerId, status) {
+  if (!canReviewSuggestion('pending', status)) return null;
+  if (pool) {
+    const result = await dbQuery(
+      "UPDATE suggestions SET status=$1,reviewed_by=$2,reviewed_at=NOW() WHERE guild_id=$3 AND id=$4 AND status='pending' RETURNING *",
+      [status,reviewerId,guildId,suggestionId]
+    );
+    return result.rows[0] || null;
+  }
+  const row = memory.suggestions.get(String(suggestionId));
+  if (!row || row.guild_id !== guildId || !canReviewSuggestion(row.status,status)) return null;
+  row.status = status;
+  row.reviewed_by = reviewerId;
+  row.reviewed_at = new Date().toISOString();
+  return row;
+}
+function suggestionComponents(suggestion) {
+  if (suggestion.status !== 'pending') return [];
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('aki:suggest:up:' + suggestion.id).setLabel('👍 Ủng hộ').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('aki:suggest:down:' + suggestion.id).setLabel('👎 Không ủng hộ').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('aki:suggest:approve:' + suggestion.id).setLabel('✅ Duyệt').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('aki:suggest:reject:' + suggestion.id).setLabel('✖ Từ chối').setStyle(ButtonStyle.Danger)
+  )];
+}
+async function suggestionEmbed(suggestion) {
+  const counts = await getSuggestionCounts(suggestion.id);
+  const statusText = suggestion.status === 'approved' ? '✅ Đã duyệt' : suggestion.status === 'rejected' ? '✖ Đã từ chối' : '🟡 Chờ đội ngũ xem xét';
+  return new EmbedBuilder().setColor(suggestion.status === 'approved' ? 0x57F287 : suggestion.status === 'rejected' ? 0xED4245 : 0x5865F2)
+    .setTitle('💡 Góp ý #' + suggestion.id)
+    .setDescription(String(suggestion.text || '').slice(0,1500))
+    .addFields(
+      { name: 'Ủng hộ', value: String(counts.up), inline: true },
+      { name: 'Không ủng hộ', value: String(counts.down), inline: true },
+      { name: 'Trạng thái', value: statusText, inline: true },
+      { name: 'Người gửi', value: '<@' + suggestion.created_by + '>', inline: false }
+    )
+    .setFooter({ text: 'Aki Dev · Suggestion System' }).setTimestamp(new Date(suggestion.created_at));
+}
+async function syncSuggestionMessage(suggestion) {
+  if (!suggestion?.message_id) return;
+  const guild = bot.guilds.cache.get(suggestion.guild_id);
+  const channel = guild ? await guild.channels.fetch(suggestion.channel_id).catch(() => null) : null;
+  const message = channel?.isTextBased?.() ? await channel.messages.fetch(suggestion.message_id).catch(() => null) : null;
+  if (!message) return;
+  await message.edit({ embeds: [await suggestionEmbed(suggestion)], components: suggestionComponents(suggestion), allowedMentions: { parse: [] } });
 }
 async function runCommand(name, ctx) {
   const { guild, userId, channel, args = {}, source = 'discord' } = ctx;
@@ -2199,6 +2351,35 @@ async function runCommand(name, ctx) {
       await addActivity(guild.id, userId, name, '#' + targetChannel.name);
       return reply((name === 'welcome-setup' ? '👋 Kênh chào mừng' : '👋 Kênh tạm biệt') + ' đã được đặt thành <#' + targetChannel.id + '>.');
     }
+    case 'suggest-setup': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      const targetChannel = args.channel ? await guild.channels.fetch(args.channel).catch(() => null) : null;
+      if (!targetChannel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(targetChannel.type) || targetChannel.guild?.id !== guild.id) throw new Error('Chọn kênh text thuộc đúng server.');
+      await setConfig(guild.id, { suggestion_channel_id: targetChannel.id });
+      await addActivity(guild.id, userId, 'suggestion:setup', 'Đặt kênh góp ý tại #' + targetChannel.name + '.');
+      return reply('💡 Kênh góp ý đã được đặt thành <#' + targetChannel.id + '>.');
+    }
+    case 'suggest': {
+      const text = normalizeSuggestionText(args.text, 1500);
+      if (text.length < 5) throw new Error('Góp ý cần ít nhất 5 ký tự.');
+      const config = await getConfig(guild.id);
+      const targetChannel = config.suggestion_channel_id ? await guild.channels.fetch(config.suggestion_channel_id).catch(() => null) : channel;
+      if (!targetChannel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(targetChannel.type) || targetChannel.guild?.id !== guild.id) throw new Error('Kênh góp ý chưa hợp lệ. Staff hãy chạy /suggest-setup.');
+      const me = guild.members.me || await guild.members.fetchMe();
+      if (!targetChannel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) throw new Error('Bot thiếu quyền View Channel, Send Messages hoặc Embed Links trong kênh góp ý.');
+      const record = await createSuggestion({ guild_id: guild.id, channel_id: targetChannel.id, created_by: userId, text });
+      try {
+        const sent = await targetChannel.send({ embeds: [await suggestionEmbed(record)], components: suggestionComponents(record), allowedMentions: { parse: [] } });
+        await setSuggestionMessageId(guild.id, record.id, sent.id);
+        record.message_id = sent.id;
+      } catch (error) {
+        if (pool) await dbQuery('DELETE FROM suggestions WHERE guild_id=$1 AND id=$2', [guild.id,record.id]).catch(() => {});
+        else memory.suggestions.delete(String(record.id));
+        throw error;
+      }
+      await addActivity(guild.id, userId, 'suggestion:created', 'Đã gửi góp ý #' + record.id + ' tại #' + targetChannel.name + '.').catch(() => {});
+      return reply('💡 Đã gửi góp ý #' + record.id + ' tới <#' + targetChannel.id + '>. Bạn có thể vote bằng các nút bên dưới.');
+    }
     case 'giveaway': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
       const prize = String(args.prize || '').trim().slice(0, 300);
@@ -2338,6 +2519,8 @@ function extractInteractionArgs(interaction) {
     out.requiredLevel = interaction.options.getInteger('required_level');
   }
   if (interaction.commandName === 'giveaway-reroll') out.giveawayId = interaction.options.getString('giveaway_id');
+  if (interaction.commandName === 'suggest') out.text = interaction.options.getString('text');
+  if (interaction.commandName === 'suggest-setup') out.channel = interaction.options.getChannel('channel')?.id;
   if (interaction.commandName === 'verify-setup') {
     out.enabled = interaction.options.getBoolean('enabled');
     out.verifyRole = interaction.options.getRole('member_role')?.id;
@@ -2501,7 +2684,7 @@ bot.on('interactionCreate', async interaction => {
     }
   }
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
-  const ephemeralCommands = new Set(['giveaway', 'giveaway-reroll', 'remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
+  const ephemeralCommands = new Set(['suggest', 'suggest-setup', 'giveaway', 'giveaway-reroll', 'remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
   try {
     const args = extractInteractionArgs(interaction);
     if (interaction.commandName === 'poll') {

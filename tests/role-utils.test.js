@@ -129,6 +129,7 @@ import { buildNativePollPayload } from '../lib/poll-utils.js';
 import { parsePagination, csvCell } from '../lib/activity-utils.js';
 import { isAccountTooNew } from '../lib/verification-utils.js';
 import { drawUniqueWinners } from '../lib/giveaway-utils.js';
+import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from '../lib/suggestion-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
   assert.equal(parseDuration('2h'), 7200);
@@ -191,4 +192,15 @@ test('giveaway winner selection is unique, bounded, and supports reroll exclusio
   assert.deepEqual(drawUniqueWinners(entries, 2, [], () => 0), ['b','c']);
   assert.deepEqual(drawUniqueWinners(entries, 3, ['a','b','c'], () => 0), ['d']);
   assert.equal(drawUniqueWinners(entries, 8, [], () => 0).length, 4);
+});
+
+test('suggestion state only allows valid votes and pending-to-review transitions', () => {
+  assert.equal(normalizeSuggestionText('  Please add more channels  '), 'Please add more channels');
+  assert.equal(normalizeSuggestionText('@everyone add channels').includes('@everyone'), false);
+  assert.equal(isSuggestionVote('up'), true);
+  assert.equal(isSuggestionVote('down'), true);
+  assert.equal(isSuggestionVote('approve'), false);
+  assert.equal(canReviewSuggestion('pending','approved'), true);
+  assert.equal(canReviewSuggestion('pending','rejected'), true);
+  assert.equal(canReviewSuggestion('approved','rejected'), false);
 });
