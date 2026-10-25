@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan, canManageTarget, canAssignRole } from './lib/role-utils.js';
-import { isAllowedOrigin } from './lib/security-utils.js';
+import { isAllowedOrigin, websocketOriginFromSiteUrl } from './lib/security-utils.js';
 import { normalizeMediaUrl } from './lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
 import { normalizeIdList, normalizeRoleMultipliers, normalizeLevelRewards, shouldAwardXpMessage, applyRoleXpMultiplier, getEligibleLevelRewards } from './lib/xp-utils.js';
@@ -66,6 +66,7 @@ const server = http.createServer(app);
 const PORT = Number(process.env.PORT || 10000);
 const isProd = process.env.NODE_ENV === 'production';
 const SITE_URL = (process.env.SITE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+const SOCKET_WS_ORIGIN = websocketOriginFromSiteUrl(SITE_URL);
 const io = new SocketIOServer(server, { cors: { origin: SITE_URL, credentials: true } });
 const APP_NAME = process.env.APP_NAME || 'Aki Dev';
 const SESSION_COOKIE = 'aki_sid';
@@ -78,7 +79,7 @@ app.use(helmet({ crossOriginEmbedderPolicy: false, contentSecurityPolicy: { dire
   styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
   fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
   imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
-  connectSrc: ["'self'", 'wss:', 'https://discord.com'], objectSrc: ["'none'"],
+  connectSrc: ["'self'", ...(SOCKET_WS_ORIGIN ? [SOCKET_WS_ORIGIN] : []), 'https://discord.com', 'https://accounts.google.com'], objectSrc: ["'none'"],
   baseUri: ["'self'"], frameAncestors: ["'self'"],
   formAction: ["'self'", 'https://discord.com', 'https://accounts.google.com']
 } } }));

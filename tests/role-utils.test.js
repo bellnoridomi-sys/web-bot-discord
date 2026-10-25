@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan, canManageTarget, canAssignRole } from '../lib/role-utils.js';
-import { isAllowedOrigin } from '../lib/security-utils.js';
+import { isAllowedOrigin, websocketOriginFromSiteUrl } from '../lib/security-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from '../lib/ticket-utils.js';
 import { normalizeMediaUrl } from '../lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from '../lib/community-utils.js';
@@ -383,4 +383,11 @@ test('web command routing keeps ephemeral moderation and personal results inside
   assert.equal(keepsCommandResultPrivate('/ping'), false);
   assert.equal(summarizeCommandResult('done'), 'done');
   assert.equal(summarizeCommandResult({ embeds:[{data:{title:'Title',description:'Description',fields:[{name:'Count',value:'4'}]}}] }), ['Title','Description','Count: 4'].join(String.fromCharCode(10)));
+});
+
+test('CSP websocket destination is derived from the configured site origin only', () => {
+  assert.equal(websocketOriginFromSiteUrl('https://dashboard.example/path'), 'wss://dashboard.example');
+  assert.equal(websocketOriginFromSiteUrl('http://localhost:10000'), 'ws://localhost:10000');
+  assert.equal(websocketOriginFromSiteUrl('javascript:alert(1)'), null);
+  assert.equal(websocketOriginFromSiteUrl('not a URL'), null);
 });
