@@ -13,6 +13,10 @@ The web dashboard has guild selection, live runtime metrics, voice controls, com
 The dashboard also supports a configurable channel for a reaction-role panel (Member auto-role plus basic opt-in ping roles), direct announcement posting from the web panel, and a `+legit` reaction shortcut. Reaction-role reactions only work on the active message ID stored in `reaction_role_panels`, with each emoji resolved from `reaction_role_bindings`. The `+legit` shortcut is disabled until `LEGIT_TARGET_USER_ID` is configured in the environment; no personal Discord ID is hard-coded in the repository.
 
  
+## Runtime diagnostics
+
+Open `/api/health` to inspect safe runtime state without exposing tokens or secrets. Check `bot.ready`/`bot.state`, `bot.lastGatewayCloseCode`, `commands.global.state`/`commands.global.errorCode`, and `database.check`. A `token_missing`, `login_failed`, or Gateway close code indicates the Discord client itself is offline; `commands.global.state: failed` explains why slash commands may not appear. The `/health` endpoint remains the simple Render availability check.
+
 ## Role and runtime troubleshooting
 
 - In **Dashboard → Auto-role & panels**, select the text channel and click **POST ROLE PANEL** again after deploying. The new panel includes both Unicode reaction emojis and matching emoji buttons; the buttons show an ephemeral success or permission error.

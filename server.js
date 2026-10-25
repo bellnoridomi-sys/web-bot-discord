@@ -31,6 +31,7 @@ import { keepsCommandResultPrivate, summarizeCommandResult } from './lib/command
 import { normalizeMessageTemplate, renderMessageTemplate } from './lib/message-template-utils.js';
 import { checkCommandCooldown, normalizeAutocompleteChoices, formatReminderList } from './lib/ux-utils.js';
 import { getCommandRegistrationScopes } from './lib/command-registration-utils.js';
+import { safeRuntimeErrorCode } from './lib/runtime-diagnostics-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -143,6 +144,25 @@ let nextGiveawayId = 1;
 let giveawayWorkerRunning = false;
 let nextSuggestionId = 1;
 let nextSalePostId = 1;
+
+const runtimeDiagnostics = {
+  database: {
+    state: process.env.DATABASE_URL ? 'connecting' : 'memory',
+    lastErrorCode: null
+  },
+  discord: {
+    state: process.env.DISCORD_TOKEN ? 'connecting' : 'token_missing',
+    lastErrorCode: null,
+    lastGatewayCloseCode: null,
+    lastEventAt: null
+  },
+  commands: {
+    global: { state: process.env.DISCORD_TOKEN ? 'waiting_for_gateway' : 'not_started', errorCode: null, lastAttemptAt: null, lastSuccessAt: null },
+    guild: { state: process.env.DISCORD_GUILD_ID ? 'waiting_for_gateway' : 'not_configured', errorCode: null, lastAttemptAt: null, lastSuccessAt: null },
+    lastErrorCode: null,
+    total: 0
+  }
+};
 
 const databaseHost = (() => { try { return new URL(process.env.DATABASE_URL || '').hostname; } catch { return ''; } })();
 const databaseSsl = resolveDatabaseSsl({
@@ -3403,8 +3423,40 @@ function extractInteractionArgs(interaction) {
   return out;
 }
 
-bot.on('error', error => { void reportRuntimeError(error, 'discord-client'); });
-bot.on('shardError', error => { void reportRuntimeError(error, 'discord-shard'); });
+bot.on('error', error => {
+  runtimeDiagnostics.discord.lastErrorCode = safeRuntimeErrorCode(error);
+  runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+  void reportRuntimeError(error, 'discord-client');
+});
+bot.on('shardError', error => {
+  runtimeDiagnostics.discord.lastErrorCode = safeRuntimeErrorCode(error);
+  runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+  void reportRuntimeError(error, 'discord-shard');
+});
+bot.on('shardDisconnect', (event, shardId) => {
+  runtimeDiagnostics.discord.state = 'disconnected';
+  runtimeDiagnostics.discord.lastGatewayCloseCode = Number.isInteger(event?.code) ? event.code : null;
+  runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+  console.warn('[discord-gateway] shard disconnected', {
+    shardId,
+    closeCode: runtimeDiagnostics.discord.lastGatewayCloseCode
+  });
+});
+bot.on('shardReconnecting', shardId => {
+  runtimeDiagnostics.discord.state = 'reconnecting';
+  runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+  console.warn('[discord-gateway] shard reconnecting', { shardId });
+});
+bot.on('shardResume', (_replayedEvents, shardId) => {
+  runtimeDiagnostics.discord.state = bot.isReady() ? 'ready' : 'connecting';
+  runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+  console.log('[discord-gateway] shard resumed', { shardId });
+});
+bot.on('invalidated', () => {
+  runtimeDiagnostics.discord.state = 'invalidated';
+  runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+  console.error('[discord-gateway] client session invalidated');
+});
 process.on('unhandledRejection', reason => { void reportRuntimeError(reason instanceof Error ? reason : new Error(String(reason)), 'unhandled-rejection'); });
 process.on('uncaughtException', error => {
   // Best-effort remote report, then exit so the hosting platform can restart a possibly corrupted process.
@@ -3413,6 +3465,11 @@ process.on('uncaughtException', error => {
 });
 
 bot.on('ready', async () => {
+  runtimeDiagnostics.discord.state = 'ready';
+  runtimeDiagnostics.discord.lastErrorCode = null;
+  runtimeDiagnostics.discord.lastGatewayCloseCode = null;
+  runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+  runtimeDiagnostics.commands.total = commands.length;
   console.log(`Logged in as ${bot.user.tag}`);
   const presenceStatus = ['online','idle','dnd','invisible'].includes(String(process.env.BOT_PRESENCE_STATUS || 'online').toLowerCase())
     ? String(process.env.BOT_PRESENCE_STATUS || 'online').toLowerCase() : 'online';
@@ -3420,15 +3477,22 @@ bot.on('ready', async () => {
   const presenceType = presenceTypes[process.env.BOT_PRESENCE_TYPE || 'Watching'] ?? ActivityType.Watching;
   const presenceText = String(process.env.BOT_PRESENCE_TEXT || (APP_NAME + ' · /help')).trim().slice(0,128) || (APP_NAME + ' · /help');
   bot.user.setPresence({ status: presenceStatus, activities: [{ name: presenceText, type: presenceType }] });
-  try {
-    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-    const guildId = String(process.env.DISCORD_GUILD_ID || '').trim();
-    if (guildId && !/^\d{17,20}$/.test(guildId)) {
-      console.warn('DISCORD_GUILD_ID is invalid; registering global commands only.');
-    }
-    // Always publish the canonical global command set. A configured development guild
-    // receives the same set too, so fast guild updates never replace global availability.
-    for (const scope of getCommandRegistrationScopes(guildId)) {
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  const guildId = String(process.env.DISCORD_GUILD_ID || '').trim();
+  const registrationScopes = getCommandRegistrationScopes(guildId);
+  if (guildId && !/^\d{17,20}$/.test(guildId)) {
+    runtimeDiagnostics.commands.guild.state = 'invalid_guild_id';
+    console.warn('DISCORD_GUILD_ID is invalid; registering global commands only.');
+  }
+  runtimeDiagnostics.commands.total = commands.length;
+  // Register both scopes independently: an invalid optional test guild must not mask
+  // a successful global registration, and vice versa.
+  for (const scope of registrationScopes) {
+    const scopeStatus = runtimeDiagnostics.commands[scope];
+    scopeStatus.state = 'registering';
+    scopeStatus.errorCode = null;
+    scopeStatus.lastAttemptAt = new Date().toISOString();
+    try {
       if (scope === 'guild') {
         await rest.put(Routes.applicationGuildCommands(bot.user.id, guildId), { body: commands });
         console.log(`Registered ${commands.length} guild commands in the configured development server.`);
@@ -3436,9 +3500,15 @@ bot.on('ready', async () => {
         await rest.put(Routes.applicationCommands(bot.user.id), { body: commands });
         console.log(`Registered ${commands.length} global commands.`);
       }
+      scopeStatus.state = 'registered';
+      scopeStatus.lastSuccessAt = new Date().toISOString();
+    } catch (error) {
+      const code = safeRuntimeErrorCode(error);
+      scopeStatus.state = 'failed';
+      scopeStatus.errorCode = code;
+      runtimeDiagnostics.commands.lastErrorCode = code;
+      console.error(`Command registration failed for ${scope} scope:`, code);
     }
-  } catch (error) {
-    console.error('Command registration failed:', error.code || error.status || error.message);
   }
   for (const guild of bot.guilds.cache.values()) {
     await guild.channels.fetch().catch(() => {});
@@ -3616,6 +3686,7 @@ bot.on('interactionCreate', async interaction => {
     else if (interaction.replied) await interaction.followUp({ content: msg, ephemeral: true }).catch(() => {});
     else await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
     addActivity(interaction.guildId, interaction.user.id, `error:/${interaction.commandName}`, `❌ Slash command thất bại bởi ${interaction.user.globalName || interaction.user.username}: ${error.message}`).catch(() => {});
+    void reportRuntimeError(error, 'slash-command:' + interaction.commandName, interaction.guildId);
   }
 });
 
@@ -4060,7 +4131,54 @@ app.get('/api/commands', (_req, res) => {
     defaultMemberPermissions: command.default_member_permissions || null
   })) });
 });
-app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'aki-discord-control', persistence: pool ? 'postgres' : 'memory', time: new Date().toISOString(), bot: bot.isReady(), sessionPersistence: Boolean(pool) }));
+app.get('/api/health', async (_req, res) => {
+  let databaseCheck = pool ? 'not_checked' : 'memory_only';
+  let databaseErrorCode = runtimeDiagnostics.database.lastErrorCode;
+  if (pool) {
+    try {
+      await dbQuery('SELECT 1');
+      databaseCheck = 'ok';
+      runtimeDiagnostics.database.state = 'ready';
+      runtimeDiagnostics.database.lastErrorCode = null;
+      databaseErrorCode = null;
+    } catch (error) {
+      databaseCheck = 'failed';
+      runtimeDiagnostics.database.state = 'failed';
+      runtimeDiagnostics.database.lastErrorCode = safeRuntimeErrorCode(error);
+      databaseErrorCode = runtimeDiagnostics.database.lastErrorCode;
+    }
+  }
+  const commandCount = Array.isArray(commands) ? commands.length : 0;
+  return res.json({
+    ok: true,
+    service: 'aki-discord-control',
+    time: new Date().toISOString(),
+    persistence: pool ? 'postgres' : 'memory',
+    sessionPersistence: Boolean(pool),
+    database: {
+      configured: Boolean(pool),
+      state: runtimeDiagnostics.database.state,
+      check: databaseCheck,
+      errorCode: databaseErrorCode
+    },
+    bot: {
+      ready: bot.isReady(),
+      state: runtimeDiagnostics.discord.state,
+      tokenConfigured: Boolean(process.env.DISCORD_TOKEN),
+      guilds: bot.guilds.cache.size,
+      ping: bot.isReady() ? Math.round(bot.ws.ping) : null,
+      lastErrorCode: runtimeDiagnostics.discord.lastErrorCode,
+      lastGatewayCloseCode: runtimeDiagnostics.discord.lastGatewayCloseCode,
+      lastEventAt: runtimeDiagnostics.discord.lastEventAt
+    },
+    commands: {
+      defined: commandCount,
+      global: runtimeDiagnostics.commands.global,
+      guild: runtimeDiagnostics.commands.guild,
+      lastErrorCode: runtimeDiagnostics.commands.lastErrorCode
+    }
+  });
+});
 app.get('/health', (_req, res) => res.status(200).send('OK'));
 
 app.get('/invite', (_req, res) => {
@@ -4763,9 +4881,21 @@ async function boot() {
   if (!pool) console.warn('DATABASE_URL missing. Login sessions will not survive Render restarts; configure a Render PostgreSQL DATABASE_URL.');
   server.listen(PORT, '0.0.0.0', () => console.log(`Aki Dev dashboard listening on 0.0.0.0:${PORT}`));
   if (process.env.DISCORD_TOKEN) {
-    bot.login(process.env.DISCORD_TOKEN).catch(error => console.error('Discord login failed:', error.message));
+    runtimeDiagnostics.discord.state = 'connecting';
+    bot.login(process.env.DISCORD_TOKEN).catch(error => {
+      runtimeDiagnostics.discord.state = 'login_failed';
+      runtimeDiagnostics.discord.lastErrorCode = safeRuntimeErrorCode(error);
+      runtimeDiagnostics.discord.lastEventAt = new Date().toISOString();
+      console.error('Discord login failed:', runtimeDiagnostics.discord.lastErrorCode);
+    });
   } else {
+    runtimeDiagnostics.discord.state = 'token_missing';
     console.warn('DISCORD_TOKEN missing. Web server is running, bot is disabled.');
   }
 }
-boot().catch(error => { console.error(error); process.exit(1); });
+boot().catch(error => {
+  runtimeDiagnostics.database.state = pool ? 'failed' : 'memory';
+  runtimeDiagnostics.database.lastErrorCode = safeRuntimeErrorCode(error);
+  console.error('Application startup failed:', runtimeDiagnostics.database.lastErrorCode);
+  process.exit(1);
+});
