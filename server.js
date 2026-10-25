@@ -31,7 +31,7 @@ import { keepsCommandResultPrivate, summarizeCommandResult } from './lib/command
 import { normalizeMessageTemplate, renderMessageTemplate } from './lib/message-template-utils.js';
 import { checkCommandCooldown, normalizeAutocompleteChoices, formatReminderList } from './lib/ux-utils.js';
 import { getCommandRegistrationScopes } from './lib/command-registration-utils.js';
-import { safeRuntimeErrorCode, classifyGatewayDebugMessage, classifyDiscordRestRoute, normalizeRateLimitDiagnostics, normalizeDiscordRestResponseDiagnostics, normalizeRetryAfterBodyValue } from './lib/runtime-diagnostics-utils.js';
+import { safeRuntimeErrorCode, classifyGatewayDebugMessage, classifyDiscordRestRoute, normalizeRateLimitDiagnostics, normalizeDiscordRestResponseDiagnostics, normalizeRetryAfterBodyValue, normalizeDiscordRestErrorBody } from './lib/runtime-diagnostics-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
@@ -3453,15 +3453,26 @@ bot.rest.on('response', (request, response) => {
   const { route, method, at } = diagnostic;
   if (status === 429) {
     runtimeDiagnostics.discord.restRateLimitCount += 1;
-    if (route === 'gateway_bot' && response?.clone && diagnostic.retryAfterMs === null) {
-      // Some responses omit Retry-After but provide retry_after in the JSON body.
+    if (route === 'gateway_bot' && response?.clone) {
+      // Read only structured, non-sensitive metadata; never expose raw error messages or bodies.
       void response.clone().json().then(body => {
-        const retryAfterMs = normalizeRetryAfterBodyValue(body?.retry_after);
-        if (runtimeDiagnostics.discord.lastRestResponse?.at === at && retryAfterMs !== null) {
-          runtimeDiagnostics.discord.lastRestResponse.retryAfterMs = retryAfterMs;
-          if (typeof body?.global === 'boolean') runtimeDiagnostics.discord.lastRestResponse.global = body.global;
+        const bodyDiagnostic = normalizeDiscordRestErrorBody(body);
+        if (runtimeDiagnostics.discord.lastRestResponse?.at !== at) return;
+        Object.assign(runtimeDiagnostics.discord.lastRestResponse, bodyDiagnostic);
+        if (runtimeDiagnostics.discord.lastRestResponse.retryAfterMs === null && bodyDiagnostic.bodyRetryAfterMs !== null) {
+          runtimeDiagnostics.discord.lastRestResponse.retryAfterMs = normalizeRetryAfterBodyValue(body?.retry_after);
         }
-      }).catch(() => {});
+        if (bodyDiagnostic.bodyGlobal !== null) {
+          runtimeDiagnostics.discord.lastRestResponse.bodyGlobal = bodyDiagnostic.bodyGlobal;
+        }
+      }).catch(() => {
+        if (runtimeDiagnostics.discord.lastRestResponse?.at === at) {
+          runtimeDiagnostics.discord.lastRestResponse.bodyFormat = 'non_json_or_unreadable';
+          runtimeDiagnostics.discord.lastRestResponse.bodyMessageClass = 'unknown';
+          runtimeDiagnostics.discord.lastRestResponse.discordErrorCode = null;
+          runtimeDiagnostics.discord.lastRestResponse.bodyGlobal = null;
+        }
+      });
     }
   }
   if (route === 'gateway_bot' && status === 401) {
