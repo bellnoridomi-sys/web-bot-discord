@@ -53,7 +53,9 @@ jobs:
           assert.ok(server.includes("aki:rr:"), 'Missing emoji button fallback for role selection');
           assert.ok(server.includes('normalizeReactionEmoji'), 'Missing Unicode emoji normalization');
           assert.ok(server.includes('isActiveReactionRolePanel(panel, message)'), 'Reaction handler must check the active panel message ID');
-          assert.ok(server.includes('sanitizePollText(args.question ||'), 'Poll text must neutralize role and mass mentions');
+          const pollUtils = fs.readFileSync('lib/poll-utils.js', 'utf8');
+          assert.ok(server.includes('buildNativePollPayload(args)'), 'Poll commands must use the native poll builder');
+          assert.ok(pollUtils.includes('sanitizePollText'), 'Native poll choices must neutralize role and mass mentions');
           assert.ok(server.includes("isAllowedOrigin(req.get('origin'), SITE_URL)"), 'Mutating requests must validate Origin');
           assert.ok(!server.includes('sessions: sessionStore.size'), 'Overview must not expose the process session count');
           assert.ok(server.includes('getReactionRoleBinding(guild.id, message.id, emojiName)'), 'Reaction handler must use the configured database binding');
