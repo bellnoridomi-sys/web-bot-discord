@@ -382,5 +382,5 @@ test('web command routing keeps ephemeral moderation and personal results inside
   assert.equal(keepsCommandResultPrivate('poll'), false);
   assert.equal(keepsCommandResultPrivate('/ping'), false);
   assert.equal(summarizeCommandResult('done'), 'done');
-  assert.equal(summarizeCommandResult({ embeds:[{data:{title:'Title',description:'Description',fields:[{name:'Count',value:'4'}]}}] }), 'Title\\nDescription\\nCount: 4');
+  assert.equal(summarizeCommandResult({ embeds:[{data:{title:'Title',description:'Description',fields:[{name:'Count',value:'4'}]}}] }), ['Title','Description','Count: 4'].join(String.fromCharCode(10)));
 });
