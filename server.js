@@ -11,6 +11,7 @@ import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sa
 import { isAllowedOrigin } from './lib/security-utils.js';
 import { normalizeMediaUrl } from './lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
+import { normalizeIdList, normalizeRoleMultipliers, normalizeLevelRewards, shouldAwardXpMessage, applyRoleXpMultiplier, getEligibleLevelRewards } from './lib/xp-utils.js';
 import { vouchDenialReason, formatAuditReason, shouldEscalateWarnings } from './lib/moderation-utils.js';
 import { parseDuration } from './lib/duration-utils.js';
 import { buildNativePollPayload } from './lib/poll-utils.js';
@@ -569,6 +570,64 @@ const COINS_WORK_MAX = 60;
 const DAILY_COOLDOWN_MS = 24 * 60 * 60_000;
 const WORK_COOLDOWN_MS = 60 * 60_000;
 
+const xpSettingsCache = new Map();
+const EMPTY_XP_SETTINGS = Object.freeze({
+  enabled: true, ignored_channel_ids: [], ignored_role_ids: [],
+  role_multipliers: {}, level_rewards: {}
+});
+async function getGuildXpSettings(guildId) {
+  if (xpSettingsCache.has(guildId)) return xpSettingsCache.get(guildId);
+  let row = null;
+  if (pool) {
+    const result = await dbQuery('SELECT enabled,ignored_channel_ids,ignored_role_ids,role_multipliers,level_rewards FROM guild_xp_settings WHERE guild_id=$1', [guildId]);
+    row = result.rows[0] || null;
+  }
+  const settings = row ? {
+    enabled: Boolean(row.enabled),
+    ignored_channel_ids: Array.isArray(row.ignored_channel_ids) ? row.ignored_channel_ids : [],
+    ignored_role_ids: Array.isArray(row.ignored_role_ids) ? row.ignored_role_ids : [],
+    role_multipliers: row.role_multipliers && typeof row.role_multipliers === 'object' ? row.role_multipliers : {},
+    level_rewards: row.level_rewards && typeof row.level_rewards === 'object' ? row.level_rewards : {}
+  } : { ...EMPTY_XP_SETTINGS };
+  xpSettingsCache.set(guildId, settings);
+  return settings;
+}
+async function saveGuildXpSettings(guildId, settings) {
+  const normalized = {
+    enabled: Boolean(settings.enabled),
+    ignored_channel_ids: normalizeIdList(settings.ignored_channel_ids),
+    ignored_role_ids: normalizeIdList(settings.ignored_role_ids),
+    role_multipliers: normalizeRoleMultipliers(settings.role_multipliers),
+    level_rewards: normalizeLevelRewards(settings.level_rewards)
+  };
+  if (pool) {
+    await dbQuery(`
+      INSERT INTO guild_xp_settings(guild_id,enabled,ignored_channel_ids,ignored_role_ids,role_multipliers,level_rewards,updated_at)
+      VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb,NOW())
+      ON CONFLICT(guild_id) DO UPDATE SET enabled=EXCLUDED.enabled,
+        ignored_channel_ids=EXCLUDED.ignored_channel_ids,ignored_role_ids=EXCLUDED.ignored_role_ids,
+        role_multipliers=EXCLUDED.role_multipliers,level_rewards=EXCLUDED.level_rewards,updated_at=NOW()
+    `, [guildId,normalized.enabled,normalized.ignored_channel_ids,normalized.ignored_role_ids,
+      JSON.stringify(normalized.role_multipliers),JSON.stringify(normalized.level_rewards)]);
+  }
+  xpSettingsCache.set(guildId, normalized);
+  return normalized;
+}
+async function awardConfiguredLevelRoles(guild, member, level, settings) {
+  const rewards = getEligibleLevelRewards(level, settings.level_rewards);
+  if (!rewards.length) return [];
+  const botMember = guild.members.me || await guild.members.fetchMe();
+  if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) return [];
+  const granted = [];
+  for (const reward of rewards) {
+    if (member.roles.cache.has(reward.roleId)) continue;
+    const role = await guild.roles.fetch(reward.roleId).catch(() => null);
+    if (!role || role.managed || role.id === guild.id || role.position >= botMember.roles.highest.position) continue;
+    try { await member.roles.add(role, 'Aki XP level reward · level ' + reward.level); granted.push(role.name); }
+    catch (error) { console.warn('Could not assign XP level reward:', error?.message || 'unknown error'); }
+  }
+  return granted;
+}
 async function ensureCommunityProfile(guildId, userId) {
   if (pool) {
     await dbQuery('INSERT INTO community_profiles(guild_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [guildId, userId]);
@@ -1185,6 +1244,12 @@ const slashCommands = [
     .addStringOption(o => o.setName('item').setDescription('Mã món hàng').setRequired(true)
       .addChoices(...SHOP_ITEMS.map(item => ({ name: item.id + ' · ' + item.price + ' xu', value: item.id })))
     ),
+  new SlashCommandBuilder().setName('xp-setup').setDescription('Cấu hình XP, bỏ qua kênh/role, hệ số và role thưởng.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+    .addBooleanOption(o => o.setName('enabled').setDescription('Bật/tắt XP tin nhắn').setRequired(true))
+    .addStringOption(o => o.setName('ignored_channels').setDescription('ID/mention kênh bỏ qua, ngăn cách bằng dấu phẩy').setMaxLength(1000).setRequired(false))
+    .addStringOption(o => o.setName('ignored_roles').setDescription('ID/mention role bỏ qua, ngăn cách bằng dấu phẩy').setMaxLength(1000).setRequired(false))
+    .addStringOption(o => o.setName('role_multipliers').setDescription('ROLE_ID=1.5, hệ số từ 0.5 tới 3').setMaxLength(1500).setRequired(false))
+    .addStringOption(o => o.setName('level_rewards').setDescription('LEVEL=ROLE_ID, ví dụ 5=123...,10=456...').setMaxLength(1500).setRequired(false)),
   new SlashCommandBuilder().setName('automod-setup').setDescription('Bật AutoMod và cấu hình domain/chống spam/raid.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
     .addBooleanOption(o => o.setName('enabled').setDescription('Bật hoặc tắt AutoMod').setRequired(true))
     .addStringOption(o => o.setName('blocked_domains').setDescription('Domain chặn, phân tách bằng dấu phẩy').setMaxLength(1500).setRequired(false))
@@ -1206,7 +1271,7 @@ const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Đặt lời nhắc 30m / 2h / 1d'], ['reminders', 'Lời nhắc đang chờ'], ['reminder-cancel', 'Huỷ lời nhắc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
-  ['verify-setup', 'Cổng xác minh / role cách ly'], ['automod-setup', 'Cấu hình AutoMod/raid'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['automod-setup', 'Chống spam/mass mention/raid'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
+  ['verify-setup', 'Cổng xác minh / role cách ly'], ['xp-setup', 'Cấu hình XP và role thưởng'], ['automod-setup', 'Cấu hình AutoMod/raid'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['automod-setup', 'Chống spam/mass mention/raid'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
@@ -2461,6 +2526,30 @@ async function runCommand(name, ctx) {
       await addActivity(guild.id, userId, name, '#' + targetChannel.name);
       return reply((name === 'welcome-setup' ? '👋 Kênh chào mừng' : '👋 Kênh tạm biệt') + ' đã được đặt thành <#' + targetChannel.id + '>.');
     }
+    case 'xp-setup': {
+      ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
+      const current = await getGuildXpSettings(guild.id);
+      const splitAndParse = (arg, fallback, parser) => arg == null ? fallback : parser(arg);
+      const ignoredChannels = splitAndParse(args.ignoredChannels, current.ignored_channel_ids, value => normalizeIdList(value));
+      const ignoredRoles = splitAndParse(args.ignoredRoles, current.ignored_role_ids, value => normalizeIdList(value));
+      const multipliers = splitAndParse(args.roleMultipliers, current.role_multipliers, value => normalizeRoleMultipliers(value));
+      const rewards = splitAndParse(args.levelRewards, current.level_rewards, value => normalizeLevelRewards(value));
+      for (const channelId of ignoredChannels) {
+        const targetChannel = await guild.channels.fetch(channelId).catch(() => null);
+        if (!targetChannel || targetChannel.guild?.id !== guild.id) throw new Error('Kênh bỏ qua không thuộc server này: ' + channelId);
+      }
+      const roleIds = new Set([...ignoredRoles, ...Object.keys(multipliers), ...Object.values(rewards)]);
+      for (const roleId of roleIds) {
+        const role = await guild.roles.fetch(roleId).catch(() => null);
+        if (!role || role.managed || role.id === guild.id) throw new Error('Role XP không hợp lệ hoặc không thuộc server này: ' + roleId);
+      }
+      const settings = await saveGuildXpSettings(guild.id, {
+        enabled: args.enabled, ignored_channel_ids: ignoredChannels, ignored_role_ids: ignoredRoles,
+        role_multipliers: multipliers, level_rewards: rewards
+      });
+      await addActivity(guild.id, userId, 'xp:setup', 'XP ' + (settings.enabled ? 'bật' : 'tắt') + ' · bỏ qua ' + settings.ignored_channel_ids.length + ' kênh/' + settings.ignored_role_ids.length + ' role · multiplier ' + Object.keys(settings.role_multipliers).length + ' role · level rewards ' + Object.keys(settings.level_rewards).length + '.');
+      return reply('✨ Đã lưu XP config: **' + (settings.enabled ? 'ON' : 'OFF') + '** · bỏ qua ' + settings.ignored_channel_ids.length + ' kênh, ' + settings.ignored_role_ids.length + ' role; ' + Object.keys(settings.role_multipliers).length + ' hệ số; ' + Object.keys(settings.level_rewards).length + ' mốc thưởng.');
+    }
     case 'automod-setup': {
       ensureMemberPermission(user, PermissionFlagsBits.ManageGuild);
       const current = await getConfig(guild.id);
@@ -2687,6 +2776,13 @@ function extractInteractionArgs(interaction) {
   if (interaction.commandName === 'suggest') out.text = interaction.options.getString('text');
   if (interaction.commandName === 'buy') out.item = interaction.options.getString('item');
   if (interaction.commandName === 'suggest-setup') out.channel = interaction.options.getChannel('channel')?.id;
+  if (interaction.commandName === 'xp-setup') {
+    out.enabled = interaction.options.getBoolean('enabled');
+    out.ignoredChannels = interaction.options.getString('ignored_channels');
+    out.ignoredRoles = interaction.options.getString('ignored_roles');
+    out.roleMultipliers = interaction.options.getString('role_multipliers');
+    out.levelRewards = interaction.options.getString('level_rewards');
+  }
   if (interaction.commandName === 'automod-setup') {
     out.enabled = interaction.options.getBoolean('enabled');
     out.blockedDomains = interaction.options.getString('blocked_domains') ?? undefined;
@@ -2861,7 +2957,7 @@ bot.on('interactionCreate', async interaction => {
     }
   }
   if (!interaction.isChatInputCommand() || !interaction.guildId) return;
-  const ephemeralCommands = new Set(['automod-setup', 'shop', 'buy', 'suggest', 'suggest-setup', 'giveaway', 'giveaway-reroll', 'remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
+  const ephemeralCommands = new Set(['xp-setup', 'automod-setup', 'shop', 'buy', 'suggest', 'suggest-setup', 'giveaway', 'giveaway-reroll', 'remind', 'reminders', 'reminder-cancel', 'warnings', 'role', 'warn', 'kick', 'ban', 'tempban', 'timeout', 'unban', 'untimeout', 'delwarn', 'case', 'modlog', 'scam-add', 'scamcheck', 'legit', 'role-panel', 'ticket-setup', 'auto-voice', 'vc-join', 'vc-leave', 'clear']);
   try {
     const args = extractInteractionArgs(interaction);
     if (interaction.commandName === 'poll') {
@@ -2961,11 +3057,22 @@ bot.on('messageCreate', async message => {
     const prefix = cfg.prefix || '!';
     if (!message.content.startsWith(prefix) && message.content.trim().length >= 4) {
       try {
-        const gain = calculateMessageXp(Math.random(), XP_PER_MESSAGE_MIN, XP_PER_MESSAGE_MAX);
-        const profile = await awardCommunityXp(message.guild.id, message.author.id, gain);
-        if (profile && Math.floor((profile.xp - profile.gain) / 100) < profile.level) {
-          await message.channel.send('🎉 <@' + message.author.id + '> lên **Level ' + profile.level + '**! Dùng `/rank` để xem tiến độ.').catch(() => {});
-          await addActivity(message.guild.id, message.author.id, 'level:up', '🎉 Đạt Level ' + profile.level + ' với ' + profile.xp + ' XP.').catch(() => {});
+        const xpSettings = await getGuildXpSettings(message.guild.id);
+        const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
+        const roleIds = member ? [...member.roles.cache.keys()] : [];
+        if (member && shouldAwardXpMessage({
+          enabled: xpSettings.enabled, channelId: message.channel.id, memberRoleIds: roleIds,
+          ignoredChannels: xpSettings.ignored_channel_ids, ignoredRoles: xpSettings.ignored_role_ids
+        })) {
+          const base = calculateMessageXp(Math.random(), XP_PER_MESSAGE_MIN, XP_PER_MESSAGE_MAX);
+          const gain = applyRoleXpMultiplier(base, roleIds, xpSettings.role_multipliers);
+          const profile = await awardCommunityXp(message.guild.id, message.author.id, gain);
+          if (profile && Math.floor((profile.xp - profile.gain) / 100) < profile.level) {
+            const granted = await awardConfiguredLevelRoles(message.guild, member, profile.level, xpSettings);
+            const roleNotice = granted.length ? ' · role thưởng: ' + granted.join(', ') : '';
+            await message.channel.send('🎉 <@' + message.author.id + '> lên **Level ' + profile.level + '**! Dùng `/rank` để xem tiến độ.' + roleNotice).catch(() => {});
+            await addActivity(message.guild.id, message.author.id, 'level:up', '🎉 Đạt Level ' + profile.level + ' với ' + profile.xp + ' XP.' + roleNotice).catch(() => {});
+          }
         }
       } catch (error) {
         void reportRuntimeError(error, 'community-xp', message.guild.id);

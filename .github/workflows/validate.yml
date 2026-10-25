@@ -35,6 +35,7 @@ jobs:
           node --check lib/shop-utils.js
           node --check lib/economy-utils.js
           node --check lib/automod-utils.js
+          node --check lib/xp-utils.js
           node --test tests/*.test.js
       - name: Check embedded JavaScript in public HTML pages
         run: |

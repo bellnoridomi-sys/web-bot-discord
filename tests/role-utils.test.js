@@ -5,6 +5,7 @@ import { isAllowedOrigin } from '../lib/security-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from '../lib/ticket-utils.js';
 import { normalizeMediaUrl } from '../lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from '../lib/community-utils.js';
+import { normalizeIdList, normalizeRoleMultipliers, normalizeLevelRewards, shouldAwardXpMessage, applyRoleXpMultiplier, getEligibleLevelRewards } from '../lib/xp-utils.js';
 
 const panel = { channel_id: '222222222222222222', message_id: '333333333333333333' };
 const activeMessage = { channelId: panel.channel_id, id: panel.message_id };
@@ -271,4 +272,21 @@ test('role assignment policy rejects managed/everyone roles and checks position'
   assert.equal(canAssignRole('staff', high, { ...low, position: 5 }, 'owner', '1'), false);
   assert.equal(canAssignRole('staff', high, { ...low, managed: true }, 'owner', '1'), false);
   assert.equal(canAssignRole('staff', high, low, 'owner', '2'), false);
+});
+
+test('XP settings normalize IDs, constrain multipliers, and validate level rewards', () => {
+  assert.deepEqual(normalizeIdList('<#12345678901234567>, 22345678901234567'), ['12345678901234567','22345678901234567']);
+  assert.throws(() => normalizeIdList('not-an-id'), /ID không hợp lệ/);
+  assert.deepEqual(normalizeRoleMultipliers('12345678901234567=1.5'), { '12345678901234567': 1.5 });
+  assert.throws(() => normalizeRoleMultipliers('12345678901234567=9'), /từ 0.5 đến 3/);
+  assert.deepEqual(normalizeLevelRewards('5=12345678901234567'), { '5': '12345678901234567' });
+  assert.throws(() => normalizeLevelRewards('0=12345678901234567'), /Level thưởng/);
+});
+test('XP policy skips configured channels/roles and uses the highest matching multiplier', () => {
+  assert.equal(shouldAwardXpMessage({ enabled: false, channelId: 'c' }), false);
+  assert.equal(shouldAwardXpMessage({ enabled: true, channelId: '123', ignoredChannels: ['123'] }), false);
+  assert.equal(shouldAwardXpMessage({ enabled: true, channelId: '123', memberRoleIds: ['a'], ignoredRoles: ['a'] }), false);
+  assert.equal(shouldAwardXpMessage({ enabled: true, channelId: 'c', memberRoleIds: ['a'] }), true);
+  assert.equal(applyRoleXpMultiplier(10, ['a','b'], { a: 1.5, b: 2 }), 20);
+  assert.deepEqual(getEligibleLevelRewards(7, { '5':'12345678901234567','10':'22345678901234567' }), [{ level:5, roleId:'12345678901234567' }]);
 });
