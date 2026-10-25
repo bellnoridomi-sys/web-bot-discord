@@ -37,6 +37,18 @@ Render's Free web service can sleep after 15 minutes with no inbound traffic, so
 4. `npm ci`
 5. `npm start`
 
+### PostgreSQL SSL/TLS
+
+The app defaults to `PGSSL_MODE=auto`. It uses no TLS for local Postgres and for Render's internal `dpg-*` Postgres hostname (the Blueprint `fromDatabase.connectionString` is an internal URL); it keeps certificate verification enabled for external Render Postgres and other database hosts. Render documents that internal connections are private-network connections and may use optional self-signed TLS certificates: https://render.com/docs/postgresql-creating-connecting
+
+- `PGSSL_MODE=auto` — recommended default.
+- `PGSSL_MODE=disable` — disable TLS; use only for trusted/private connections. Render external Postgres requires TLS.
+- `PGSSL_MODE=require` — require TLS but do not verify the server certificate, matching PostgreSQL's `sslmode=require` behavior.
+- `PGSSL_MODE=verify-full` — require TLS and verify the server certificate.
+- `PGSSL_REJECT_UNAUTHORIZED=true|false` — legacy explicit override; leave unset unless you need to override certificate verification.
+
+Do not put database credentials in logs, source control, or screenshots.
+
 ### Database migrations and backups
 
 The schema is managed by ordered SQL files in `migrations/`. Applied migration filenames are recorded in `schema_migrations`; existing tables are preserved and migrations use idempotent DDL for older databases.

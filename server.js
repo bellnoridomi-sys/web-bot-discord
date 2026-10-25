@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { normalizeReactionEmoji, isActiveReactionRolePanel, sanitizePollText, sanitizePollFooter, isRoleHigherThan, canManageTarget, canAssignRole } from './lib/role-utils.js';
 import { isAllowedOrigin, websocketOriginFromSiteUrl } from './lib/security-utils.js';
+import { resolveDatabaseSsl } from './lib/db-ssl-utils.js';
 import { normalizeMediaUrl } from './lib/media-utils.js';
 import { getLevelProgress, calculateMessageXp } from './lib/community-utils.js';
 import { normalizeIdList, normalizeRoleMultipliers, normalizeLevelRewards, shouldAwardXpMessage, applyRoleXpMultiplier, getEligibleLevelRewards } from './lib/xp-utils.js';
@@ -143,11 +144,16 @@ let nextSuggestionId = 1;
 let nextSalePostId = 1;
 
 const databaseHost = (() => { try { return new URL(process.env.DATABASE_URL || '').hostname; } catch { return ''; } })();
+const databaseSsl = resolveDatabaseSsl({
+  host: databaseHost,
+  isRender: process.env.RENDER === 'true',
+  mode: process.env.PGSSL_MODE || 'auto',
+  rejectUnauthorized: process.env.PGSSL_REJECT_UNAUTHORIZED
+});
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: ['localhost', '127.0.0.1', '::1'].includes(databaseHost) || process.env.PGSSL_MODE === 'disable'
-        ? false : { rejectUnauthorized: process.env.PGSSL_REJECT_UNAUTHORIZED !== 'false' },
+      ssl: databaseSsl,
       max: 4, idleTimeoutMillis: 10_000
     })
   : null;
