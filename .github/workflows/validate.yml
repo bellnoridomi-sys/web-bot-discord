@@ -90,6 +90,9 @@ jobs:
           for (const menu of ["setName('Userinfo')", "setName('Warn')", "setName('Report')"]) assert.ok(server.includes(menu), 'Missing moderation context menu: ' + menu);
           assert.ok(server.includes("app.get('/api/commands'"), 'Missing command schema endpoint');
           assert.ok(html.includes('id="commandDynamicFields"'), 'Command Lab should render dynamic fields');
+          assert.ok(html.includes('id="announcementPreviewMessage"'), 'Announcement editor requires live preview');
+          assert.ok(client.includes('renderAnnouncementPreview'), 'Announcement preview should update as fields change');
+          assert.ok(server.includes("ANNOUNCEMENT_BUTTON_REQUIRES_HTTPS"), 'Announcement link buttons must require HTTPS');
           assert.ok(client.includes('renderDynamicCommandForm'), 'Missing generated Command Lab form');
           assert.ok(server.includes("app.get('/invite'"), 'Missing Add to Discord endpoint');
           for (const page of ['privacy.html','terms.html','leaderboard.html']) assert.ok(fs.existsSync('public/' + page), 'Missing public page: ' + page);

@@ -3324,10 +3324,26 @@ app.post('/api/guilds/:guildId/announce', requireAuth, async (req, res) => {
     if (!channel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type) || channel.guild?.id !== guild.id) {
       return res.status(400).json({ error: 'ANNOUNCEMENT_CHANNEL_INVALID' });
     }
-    const title = String(req.body?.title || '📣 THÔNG BÁO').trim().slice(0, 256);
-    const messageText = String(req.body?.message || '').trim();
-    if (!messageText) return res.status(400).json({ error: 'ANNOUNCEMENT_MESSAGE_REQUIRED' });
+    const actorName = String(actor.displayName || actor.user.globalName || actor.user.username || 'thành viên').slice(0, 100);
+    const title = String(req.body?.title || '📣 THÔNG BÁO').trim().slice(0, 256)
+      .replaceAll('{user}', actorName).replaceAll('{server}', guild.name);
+    const rawMessage = String(req.body?.message || '').trim();
+    if (!rawMessage) return res.status(400).json({ error: 'ANNOUNCEMENT_MESSAGE_REQUIRED' });
+    const messageText = rawMessage.replaceAll('{user}', actorName).replaceAll('{server}', guild.name);
     if (messageText.length > 4000) return res.status(400).json({ error: 'ANNOUNCEMENT_MESSAGE_TOO_LONG' });
+    let imageUrl = null;
+    try { imageUrl = normalizeMediaUrl(String(req.body?.imageUrl || '').trim()); }
+    catch { return res.status(400).json({ error: 'ANNOUNCEMENT_IMAGE_URL_INVALID' }); }
+    if (imageUrl && new URL(imageUrl).protocol !== 'https:') return res.status(400).json({ error: 'ANNOUNCEMENT_IMAGE_REQUIRES_HTTPS' });
+    const buttonLabel = String(req.body?.buttonLabel || '').trim().slice(0, 80);
+    const rawButtonUrl = String(req.body?.buttonUrl || '').trim();
+    let buttonUrl = null;
+    if (buttonLabel || rawButtonUrl) {
+      if (!buttonLabel || !rawButtonUrl) return res.status(400).json({ error: 'ANNOUNCEMENT_BUTTON_FIELDS_REQUIRED' });
+      try { buttonUrl = normalizeMediaUrl(rawButtonUrl); }
+      catch { return res.status(400).json({ error: 'ANNOUNCEMENT_BUTTON_URL_INVALID' }); }
+      if (!buttonUrl || new URL(buttonUrl).protocol !== 'https:') return res.status(400).json({ error: 'ANNOUNCEMENT_BUTTON_REQUIRES_HTTPS' });
+    }
 
     const pingEveryone = Boolean(req.body?.pingEveryone);
     if (pingEveryone) ensureMemberPermission(actor, PermissionFlagsBits.MentionEveryone);
@@ -3343,9 +3359,14 @@ app.post('/api/guilds/:guildId/announce', requireAuth, async (req, res) => {
       .setDescription(messageText)
       .setFooter({ text: APP_NAME + ' · Web Announcement' })
       .setTimestamp();
+    if (imageUrl) embed.setImage(imageUrl);
+    const components = buttonUrl && buttonLabel ? [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel(buttonLabel).setURL(buttonUrl)
+    )] : [];
     const sent = await channel.send({
       content: pingEveryone ? '@everyone' : undefined,
       embeds: [embed],
+      components,
       allowedMentions: { parse: pingEveryone ? ['everyone'] : [] }
     });
     await addActivity(guild.id, actorId, 'web:announce', '📣 Đã gửi thông báo từ dashboard tới #' + channel.name + '.');

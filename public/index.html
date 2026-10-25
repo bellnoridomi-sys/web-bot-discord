@@ -182,7 +182,21 @@
             <div class="command-form">
               <div class="field"><label for="announcementChannel">KÊNH ĐĂNG THÔNG BÁO</label><select id="announcementChannel"><option value="">Chọn kênh text</option></select></div>
               <div class="field"><label for="announcementTitle">TIÊU ĐỀ</label><input id="announcementTitle" maxlength="256" value="📣 THÔNG BÁO" placeholder="Tiêu đề thông báo"></div>
-              <div class="field"><label for="announcementMessage">NỘI DUNG</label><textarea id="announcementMessage" rows="4" maxlength="4000" placeholder="Nhập thông báo sẽ gửi tới Discord..."></textarea></div>
+              <div class="field"><label for="announcementMessage">NỘI DUNG</label><textarea id="announcementMessage" rows="4" maxlength="4000" placeholder="Nhập thông báo sẽ gửi tới Discord..."></textarea><p class="tiny-note">Biến hỗ trợ: <code>{user}</code> và <code>{server}</code> · preview dưới đây cập nhật trực tiếp.</p></div>
+              <div class="field"><label for="announcementImageUrl">URL ẢNH EMBED (HTTPS)</label><input id="announcementImageUrl" type="url" maxlength="2048" placeholder="https://example.com/banner.png"></div>
+              <div class="command-dynamic-fields announcement-button-fields">
+                <div class="field"><label for="announcementButtonLabel">NHÃN NÚT (TUỲ CHỌN)</label><input id="announcementButtonLabel" maxlength="80" placeholder="Xem thêm"></div>
+                <div class="field"><label for="announcementButtonUrl">URL NÚT (HTTPS)</label><input id="announcementButtonUrl" type="url" maxlength="2048" placeholder="https://example.com"></div>
+              </div>
+              <div class="announcement-live-preview">
+                <div class="announcement-preview-caption">LIVE EMBED PREVIEW</div>
+                <div class="announcement-preview-card">
+                  <div id="announcementPreviewTitle" class="announcement-preview-title">📣 THÔNG BÁO</div>
+                  <div id="announcementPreviewMessage" class="announcement-preview-message">Nội dung thông báo sẽ hiện ở đây.</div>
+                  <img id="announcementPreviewImage" class="announcement-preview-image" alt="Preview ảnh embed" hidden>
+                  <a id="announcementPreviewButton" class="announcement-preview-button" href="#" target="_blank" rel="noopener noreferrer" hidden>Xem thêm ↗</a>
+                </div>
+              </div>
               <label class="announce-ping"><input id="announcementPingEveryone" type="checkbox"> <span>📢 Ping @everyone (cần quyền Mention Everyone)</span></label>
               <button class="btn btn-light" id="sendAnnouncement" type="button">📣 GỬI THÔNG BÁO ↗</button>
             </div>
