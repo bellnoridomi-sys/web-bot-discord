@@ -140,7 +140,7 @@ import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from '../lib/temp
 import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMatchingFaq } from '../lib/tag-utils.js';
 import { normalizePage, slicePage } from '../lib/page-utils.js';
 import { keepsCommandResultPrivate, summarizeCommandResult } from '../lib/command-routing-utils.js';
-import { checkCommandCooldown, normalizeAutocompleteChoices } from '../lib/ux-utils.js';
+import { checkCommandCooldown, normalizeAutocompleteChoices, formatReminderList } from '../lib/ux-utils.js';
 import { normalizeMessageTemplate, renderMessageTemplate } from '../lib/message-template-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, isRaidJoinBurst } from '../lib/automod-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
@@ -434,4 +434,25 @@ test('welcome/goodbye templates validate HTTPS links and sanitize mentions', () 
   assert.equal(renderMessageTemplate(template,'Player','My Server').message.includes('My Server'),true);
   assert.throws(()=>normalizeMessageTemplate('goodbye',{title:'x',message:'{user}',image_url:'javascript:alert(1)'}),/HTTPS/);
   assert.throws(()=>normalizeMessageTemplate('welcome',{title:'Title',message:'Message',button_label:'Rules'}),/cả nhãn và URL/);
+});
+
+test('reminder list is separated by real newlines, not a literal backslash-n', () => {
+  const body = formatReminderList([
+    { id: 7, execute_at: 1_700_000_000_000, text: 'first' },
+    { id: 8, execute_at: 1_700_000_060_000, text: 'x'.repeat(400) }
+  ]);
+  const lines = body.split('\n');
+  assert.equal(lines.length, 2);
+  assert.equal(body.includes('\\n'), false);
+  assert.equal(lines[0], '#7 · <t:1700000000:R> · first');
+  assert.equal(lines[1].endsWith('x'.repeat(150)), true);
+  assert.equal(lines[1].length, '#8 · <t:1700000060:R> · '.length + 150);
+  assert.equal(formatReminderList(null), '');
+});
+
+test('server source never joins user-visible lines with an escaped newline', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('../server.js', import.meta.url), 'utf8');
+  // A JavaScript literal '\\n' prints backslash + n in Discord instead of a line break.
+  assert.equal(/join\(\s*(['"`])\\\\n\1\s*\)/.test(source), false);
 });
