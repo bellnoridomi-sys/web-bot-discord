@@ -69,6 +69,7 @@ import {
 const { Pool } = pg;
 const app = express();
 const server = http.createServer(app);
+let applicationReady = false;
 const PORT = Number(process.env.PORT || 10000);
 const isProd = process.env.NODE_ENV === 'production';
 const SITE_URL = (process.env.SITE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
@@ -96,6 +97,11 @@ app.use((req, res, next) => {
   if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
   if (!isAllowedOrigin(req.get('origin'), SITE_URL)) return res.status(403).json({ error: 'ORIGIN_NOT_ALLOWED' });
   next();
+});
+app.use((req, res, next) => {
+  if (applicationReady || req.path === '/health' || req.path === '/api/health') return next();
+  res.set('Retry-After', '5');
+  return res.status(503).json({ error: 'SERVICE_STARTING' });
 });
 
 const sessionStore = new Map();
@@ -4205,9 +4211,9 @@ app.get('/api/commands', (_req, res) => {
   })) });
 });
 app.get('/api/health', async (_req, res) => {
-  let databaseCheck = pool ? 'not_checked' : 'memory_only';
+  let databaseCheck = pool ? (applicationReady ? 'not_checked' : 'starting') : 'memory_only';
   let databaseErrorCode = runtimeDiagnostics.database.lastErrorCode;
-  if (pool) {
+  if (pool && applicationReady) {
     try {
       await dbQuery('SELECT 1');
       databaseCheck = 'ok';
@@ -4223,9 +4229,10 @@ app.get('/api/health', async (_req, res) => {
   }
   const commandCount = Array.isArray(commands) ? commands.length : 0;
   return res.json({
-    ok: true,
+    ok: applicationReady,
     service: 'aki-discord-control',
     time: new Date().toISOString(),
+    application: { ready: applicationReady, state: applicationReady ? 'ready' : 'starting' },
     persistence: pool ? 'postgres' : 'memory',
     sessionPersistence: Boolean(pool),
     database: {
@@ -4954,11 +4961,27 @@ setInterval(() => tempBanTick().catch(error => console.warn('Tempban expiry work
 setInterval(() => giveawayTick(), 10_000);
 
 async function boot() {
+  // Bind the public HTTP port before database migrations/session restoration so Render can
+  // detect the listener even when startup dependencies are slow.
+  await new Promise((resolve, reject) => {
+    const onError = error => {
+      server.off('listening', onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      console.log(`Aki Dev dashboard listening on 0.0.0.0:${PORT}`);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(PORT, '0.0.0.0');
+  });
   await initDb();
   await restorePersistentSessions();
   await persistAllSessions(); // migrate any legacy plaintext OAuth fields to encrypted storage
+  applicationReady = true;
   if (!pool) console.warn('DATABASE_URL missing. Login sessions will not survive Render restarts; configure a Render PostgreSQL DATABASE_URL.');
-  server.listen(PORT, '0.0.0.0', () => console.log(`Aki Dev dashboard listening on 0.0.0.0:${PORT}`));
   if (process.env.DISCORD_TOKEN) {
     runtimeDiagnostics.discord.state = 'connecting';
     bot.login(process.env.DISCORD_TOKEN).catch(error => {
