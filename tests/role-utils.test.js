@@ -132,6 +132,7 @@ import { drawUniqueWinners } from '../lib/giveaway-utils.js';
 import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from '../lib/suggestion-utils.js';
 import { SHOP_ITEMS, getShopItem, isSafeShopRole } from '../lib/shop-utils.js';
 import { nextDailyStreak, dailyStreakReward, UTC_DAY_MS } from '../lib/economy-utils.js';
+import { normalizeBlockedDomains, findBlockedDomain, isMassMention, isRaidJoinBurst } from '../lib/automod-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
   assert.equal(parseDuration('2h'), 7200);
@@ -233,4 +234,21 @@ test('daily streak reward bonus grows and caps', () => {
   assert.equal(dailyStreakReward(2), 125);
   assert.equal(dailyStreakReward(7), 250);
   assert.equal(dailyStreakReward(30), 250);
+});
+
+test('blocked-domain matching checks host boundaries and parses user-configured domains', () => {
+  const domains = normalizeBlockedDomains('*.scam.example, bad.test');
+  assert.deepEqual(domains, ['scam.example', 'bad.test']);
+  assert.equal(findBlockedDomain('Read https://sub.scam.example/path now', domains), 'scam.example');
+  assert.equal(findBlockedDomain('https://not-scam.example/path', domains), null);
+  assert.throws(() => normalizeBlockedDomains('bad domain'), /Domain không hợp lệ/);
+});
+test('mass mention detection catches everyone and excessive mention counts', () => {
+  assert.equal(isMassMention({ content: 'hello @everyone' }, 5), true);
+  assert.equal(isMassMention({ content: 'hello', mentions: { users: { size: 2 }, roles: { size: 1 } } }, 3), true);
+  assert.equal(isMassMention({ content: 'hello', mentions: { users: { size: 1 }, roles: { size: 0 } } }, 3), false);
+});
+test('raid join burst triggers only after configured threshold within time window', () => {
+  assert.equal(isRaidJoinBurst([1000,2000,3000],4000,10000,5), true);
+  assert.equal(isRaidJoinBurst([1000,2000,3000],4000,1000,5), false);
 });

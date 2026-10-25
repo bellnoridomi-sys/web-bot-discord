@@ -34,6 +34,7 @@ jobs:
           node --check lib/suggestion-utils.js
           node --check lib/shop-utils.js
           node --check lib/economy-utils.js
+          node --check lib/automod-utils.js
           node --test tests/*.test.js
       - name: Check critical dashboard and reaction-role hooks exist
         run: |

@@ -20,6 +20,7 @@ import { drawUniqueWinners } from './lib/giveaway-utils.js';
 import { normalizeSuggestionText, isSuggestionVote, canReviewSuggestion } from './lib/suggestion-utils.js';
 import { SHOP_ITEMS, getShopItem, isSafeShopRole } from './lib/shop-utils.js';
 import { nextDailyStreak, dailyStreakReward } from './lib/economy-utils.js';
+import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
 import { Server as SocketIOServer } from 'socket.io';
 import pg from 'pg';
@@ -179,7 +180,15 @@ async function getConfig(guildId) {
     verification_role_id: null,
     verification_quarantine_role_id: null,
     verification_min_account_days: 0,
-    suggestion_channel_id: null
+    suggestion_channel_id: null,
+    automod_enabled: false,
+    automod_blocked_domains: [],
+    automod_spam_threshold: 5,
+    automod_spam_window_seconds: 10,
+    automod_max_mentions: 5,
+    automod_raid_join_threshold: 8,
+    automod_raid_window_seconds: 20,
+    automod_lockdown_seconds: 60
   });
   return memory.configs.get(guildId);
 }
@@ -193,8 +202,10 @@ async function setConfig(guildId, patch) {
         guild_id, auto_voice_enabled, auto_voice_channel_id, prefix, log_channel_id, auto_role_id,
         welcome_channel_id, goodbye_channel_id, verification_enabled, verification_channel_id,
         verification_message_id, verification_role_id, verification_quarantine_role_id,
-        verification_min_account_days, suggestion_channel_id, updated_at
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
+        verification_min_account_days, suggestion_channel_id, automod_enabled, automod_blocked_domains,
+        automod_spam_threshold, automod_spam_window_seconds, automod_max_mentions,
+        automod_raid_join_threshold, automod_raid_window_seconds, automod_lockdown_seconds, updated_at
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,NOW())
       ON CONFLICT(guild_id) DO UPDATE SET
         auto_voice_enabled=EXCLUDED.auto_voice_enabled,
         auto_voice_channel_id=EXCLUDED.auto_voice_channel_id,
@@ -210,6 +221,14 @@ async function setConfig(guildId, patch) {
         verification_quarantine_role_id=EXCLUDED.verification_quarantine_role_id,
         verification_min_account_days=EXCLUDED.verification_min_account_days,
         suggestion_channel_id=EXCLUDED.suggestion_channel_id,
+        automod_enabled=EXCLUDED.automod_enabled,
+        automod_blocked_domains=EXCLUDED.automod_blocked_domains,
+        automod_spam_threshold=EXCLUDED.automod_spam_threshold,
+        automod_spam_window_seconds=EXCLUDED.automod_spam_window_seconds,
+        automod_max_mentions=EXCLUDED.automod_max_mentions,
+        automod_raid_join_threshold=EXCLUDED.automod_raid_join_threshold,
+        automod_raid_window_seconds=EXCLUDED.automod_raid_window_seconds,
+        automod_lockdown_seconds=EXCLUDED.automod_lockdown_seconds,
         updated_at=NOW()
     `, [
       guildId, Boolean(next.auto_voice_enabled), next.auto_voice_channel_id || null,
@@ -218,7 +237,14 @@ async function setConfig(guildId, patch) {
       Boolean(next.verification_enabled), next.verification_channel_id || null,
       next.verification_message_id || null, next.verification_role_id || null,
       next.verification_quarantine_role_id || null, Math.min(365, Math.max(0, Number(next.verification_min_account_days) || 0)),
-      next.suggestion_channel_id || null
+      next.suggestion_channel_id || null,
+      Boolean(next.automod_enabled), normalizeBlockedDomains(next.automod_blocked_domains || []),
+      Math.max(3, Math.min(20, Number(next.automod_spam_threshold) || 5)),
+      Math.max(3, Math.min(60, Number(next.automod_spam_window_seconds) || 10)),
+      Math.max(3, Math.min(20, Number(next.automod_max_mentions) || 5)),
+      Math.max(5, Math.min(30, Number(next.automod_raid_join_threshold) || 8)),
+      Math.max(5, Math.min(60, Number(next.automod_raid_window_seconds) || 20)),
+      Math.max(30, Math.min(600, Number(next.automod_lockdown_seconds) || 60))
     ]);
   } else memory.configs.set(guildId, next);
   return next;
@@ -1154,7 +1180,16 @@ const slashCommands = [
   new SlashCommandBuilder().setName('buy').setDescription('Mua role trang trí bằng xu.')
     .addStringOption(o => o.setName('item').setDescription('Mã món hàng').setRequired(true)
       .addChoices(...SHOP_ITEMS.map(item => ({ name: item.id + ' · ' + item.price + ' xu', value: item.id })))
-    )
+    ),
+  new SlashCommandBuilder().setName('automod-setup').setDescription('Bật AutoMod và cấu hình domain/chống spam/raid.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+    .addBooleanOption(o => o.setName('enabled').setDescription('Bật hoặc tắt AutoMod').setRequired(true))
+    .addStringOption(o => o.setName('blocked_domains').setDescription('Domain chặn, phân tách bằng dấu phẩy').setMaxLength(1500).setRequired(false))
+    .addIntegerOption(o => o.setName('spam_threshold').setDescription('Số tin nhắn trong cửa sổ spam (3–20)').setMinValue(3).setMaxValue(20).setRequired(false))
+    .addIntegerOption(o => o.setName('spam_window_seconds').setDescription('Cửa sổ spam (3–60 giây)').setMinValue(3).setMaxValue(60).setRequired(false))
+    .addIntegerOption(o => o.setName('max_mentions').setDescription('Ngưỡng mass mention (3–20)').setMinValue(3).setMaxValue(20).setRequired(false))
+    .addIntegerOption(o => o.setName('raid_join_threshold').setDescription('Ngưỡng join burst (5–30)').setMinValue(5).setMaxValue(30).setRequired(false))
+    .addIntegerOption(o => o.setName('raid_window_seconds').setDescription('Cửa sổ raid (5–60 giây)').setMinValue(5).setMaxValue(60).setRequired(false))
+    .addIntegerOption(o => o.setName('lockdown_seconds').setDescription('Thời gian khóa text khi raid (30–600 giây)').setMinValue(30).setMaxValue(600).setRequired(false))
 ].map(c => c.toJSON());
 const contextMenuCommands = [
   new ContextMenuCommandBuilder().setName('Userinfo').setType(ApplicationCommandType.User),
@@ -1167,7 +1202,7 @@ const helpLines = [
   ['ping', 'Kiểm tra latency'], ['server', 'Thông tin server'], ['userinfo', 'Thông tin user'], ['avatar', 'Avatar'], ['botinfo', 'Thông tin bot'], ['rank', 'Cấp độ và XP'], ['balance', 'Số dư xu'], ['daily', 'Nhận xu mỗi ngày'], ['work', 'Làm việc nhận xu'], ['leaderboard', 'Top level / xu'],
   ['poll', 'Tạo bình chọn'], ['8ball', 'Quả cầu tiên tri'], ['roll', 'Xúc xắc'], ['coinflip', 'Đồng xu'], ['remind', 'Đặt lời nhắc 30m / 2h / 1d'], ['reminders', 'Lời nhắc đang chờ'], ['reminder-cancel', 'Huỷ lời nhắc'],
   ['afk', 'AFK + ảnh/GIF riêng'], ['warn', 'Cảnh cáo'], ['warnings', 'Lịch sử cảnh cáo'], ['clear', 'Xoá tin nhắn'], ['slowmode', 'Slowmode'],
-  ['verify-setup', 'Cổng xác minh / role cách ly'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
+  ['verify-setup', 'Cổng xác minh / role cách ly'], ['giveaway', 'Tạo giveaway'], ['giveaway-reroll', 'Reroll giveaway'], ['suggest', 'Gửi góp ý'], ['suggest-setup', 'Chọn kênh góp ý'], ['shop', 'Cửa hàng xu'], ['buy', 'Mua role bằng xu'], ['automod-setup', 'Chống spam/mass mention/raid'], ['lock', 'Khoá kênh'], ['unlock', 'Mở khoá'], ['kick', 'Kick'], ['ban', 'Ban'], ['tempban', 'Ban tạm'], ['timeout', 'Timeout'], ['unban', 'Gỡ ban'], ['untimeout', 'Gỡ timeout'], ['delwarn', 'Xoá cảnh cáo'], ['case', 'Tra cứu case'], ['modlog', 'Nhật ký moderation'], ['role', 'Quản lý role'], ['vouch', 'Đánh giá giao dịch'], ['vouches', 'Danh sách vouch'], ['scamcheck', 'Kiểm tra scammer'], ['scam-add', 'Thêm cảnh báo scammer'],
   ['announce', 'Thông báo'], ['legit', 'Staff xác minh thành viên'], ['ticket-setup', 'Đăng bảng ticket hỗ trợ'], ['role-panel', 'Đăng bảng tự nhận role'], ['vc-join', 'Vào voice'], ['vc-leave', 'Rời voice'], ['auto-voice', 'Tự động giữ voice'], ['welcome-setup', 'Cấu hình chào mừng'], ['goodbye-setup', 'Cấu hình tạm biệt']
 ];
 
