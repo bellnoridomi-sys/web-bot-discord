@@ -1,6 +1,6 @@
 const ROUTES=['home','features','dashboard','commands','docs'];
 const COMMANDS=[['ping','Check bot latency'],['help','Show command help'],['server','Server overview'],['userinfo','Inspect a member'],['avatar','Show a member avatar'],['botinfo','Bot runtime info'],['rank','Level and XP'],['balance','View coins'],['daily','Claim daily coins'],['work','Work for coins'],['leaderboard','Level and coin rankings'],['welcome-setup','Configure welcome channel'],['goodbye-setup','Configure goodbye channel'],['poll','Create a reaction poll'],['8ball','Ask the anime orb'],['roll','Roll a random number'],['coinflip','Flip a coin'],['remind','Create a reminder'],['afk','Set AFK with optional image/GIF'],['warn','Warn a member'],['warnings','List member warnings'],['clear','Delete recent messages'],['slowmode','Set channel slowmode'],['lock','Lock a channel'],['unlock','Unlock a channel'],['kick','Kick a member'],['ban','Ban a member'],['timeout','Timeout a member'],['role','Add or remove a role'],['legit','Staff-only ✅ legit verification'],['ticket-setup','Post private ticket panel'],['role-panel','Post self-service emoji roles'],['announce','Send a styled announcement'],['vc-join','Join a voice channel'],['vc-leave','Leave voice'],['auto-voice','Toggle automatic voice recovery']];
-const state={route:'home',me:null,guild:null,config:null,roles:[],channels:[],commandDefinitions:[],commandMembers:[],commandMembersGuild:null,socket:null};
+const state={route:'home',me:null,guild:null,config:null,roles:[],channels:[],commandDefinitions:[],commandMembers:[],commandMembersGuild:null,messageTemplates:{welcome:null,goodbye:null},socket:null};
 const $=id=>document.getElementById(id);
 function escapeHtml(v=''){return String(v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
 async function fetchJson(url,options={}){const res=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(options.headers||{})},...options});const text=await res.text();let data={};try{data=JSON.parse(text)}catch{if(!res.ok)throw new Error(text||`HTTP ${res.status}`)}if(!res.ok){const code=data.error||`HTTP ${res.status}`;if(code==='NOT_AUTHENTICATED'){const wasAuthenticated=Boolean(state.me?.authenticated);state.me={authenticated:false};state.guild=null;state.config=null;state.socket?.disconnect();renderLoggedOut();if(wasAuthenticated)showToast('Phiên đăng nhập đã hết hạn. Hãy đăng nhập Discord lại.');throw new Error('Phiên đăng nhập đã hết hạn. Hãy đăng nhập Discord lại rồi thử lần nữa.')}throw new Error(data.message||code)}return data;}
@@ -51,7 +51,7 @@ async function loadGuild(){
   const d=await fetchJson(`/api/guilds/${state.guild.id}/config`);state.config=d.config;state.roles=d.roles||[];state.commandMembers=[];state.commandMembersGuild=null;
   const autoSelect=$('autoRoleSelect');if(autoSelect){autoSelect.innerHTML='<option value="">Tắt auto-role</option>'+(d.roles||[]).map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');autoSelect.value=d.config.auto_role_id||''}
   $('metricMembers').textContent=d.stats.members;$('metricChannels').textContent=d.stats.channels;$('metricPing').textContent=`${d.stats.ping}ms`;$('metricCommands').textContent=state.me.bot?.commands??COMMANDS.length;$('autoVoice').checked=!!d.config.auto_voice_enabled;
-  await loadChannels();renderDynamicCommandForm();await loadAfk();await refreshActivity();watchCurrentGuild();
+  await loadChannels();renderDynamicCommandForm();await loadMessageTemplates();await loadAfk();await refreshActivity();watchCurrentGuild();
  }catch(e){flash('responseBox',e.message,true)}
 }
 async function loadChannels(){
@@ -193,6 +193,57 @@ function renderAnnouncementPreview(){
  try{const candidate=new URL(buttonValue);if(candidate.protocol==='https:')buttonUrl=candidate.toString()}catch{}
  if(buttonNode){buttonNode.hidden=!(label&&buttonUrl);buttonNode.textContent=(label||'Xem thêm')+' ↗';buttonNode.href=buttonUrl||'#'}
 }
+
+function templateValue(kind,key){return $(kind+'Template'+key)?.value||''}
+function renderMessageTemplatePreview(kind){
+ const title=templateValue(kind,'Title').trim()||(kind==='welcome'?'👋 Chào mừng thành viên mới!':'👋 Một thành viên đã rời đi');
+ const message=templateValue(kind,'Message').trim()||(kind==='welcome'?'Chào mừng {user} đến với {server}!':'{user} đã rời khỏi {server}.');
+ const user=state.me?.user?.globalName||state.me?.user?.username||'Tên người dùng';
+ const serverName=state.guild?.name||'Tên server';
+ const substitute=value=>String(value||'').replaceAll('{user}',user).replaceAll('{server}',serverName);
+ const titleNode=$(kind+'TemplatePreviewTitle'),messageNode=$(kind+'TemplatePreviewMessage');
+ if(titleNode)titleNode.textContent=substitute(title);
+ if(messageNode)messageNode.textContent=substitute(message);
+ const imageNode=$(kind+'TemplatePreviewImage');
+ const imageValue=templateValue(kind,'Image').trim();
+ let imageUrl='';try{const url=new URL(imageValue);if(url.protocol==='https:')imageUrl=url.toString()}catch{}
+ if(imageNode){imageNode.hidden=!imageUrl;if(imageUrl&&imageNode.src!==imageUrl)imageNode.src=imageUrl;if(!imageUrl)imageNode.removeAttribute('src')}
+ const buttonNode=$(kind+'TemplatePreviewButton');
+ const label=templateValue(kind,'ButtonLabel').trim(),urlValue=templateValue(kind,'ButtonUrl').trim();
+ let buttonUrl='';try{const url=new URL(urlValue);if(url.protocol==='https:')buttonUrl=url.toString()}catch{}
+ if(buttonNode){buttonNode.hidden=!(label&&buttonUrl);buttonNode.textContent=(label||'Xem thêm')+' ↗';buttonNode.href=buttonUrl||'#'}
+}
+async function loadMessageTemplates(){
+ if(!state.guild||state.guild.botPresent===false)return;
+ for(const kind of ['welcome','goodbye']){
+  try{
+   const data=await fetchJson('/api/guilds/'+state.guild.id+'/message-templates/'+kind);
+   const template=data.template||{};
+   state.messageTemplates[kind]=template;
+   for(const [key,prop] of [['Title','title'],['Message','message'],['Image','image_url'],['ButtonLabel','button_label'],['ButtonUrl','button_url']]){
+    const el=$(kind+'Template'+key);if(el)el.value=template[prop]||'';
+   }
+   const status=$(kind+'TemplateStatus');if(status)status.textContent=data.saved?'SAVED · template đã lưu':'DEFAULT · chưa có tuỳ chỉnh';
+   renderMessageTemplatePreview(kind);
+  }catch(error){const status=$(kind+'TemplateStatus');if(status)status.textContent='ERROR · '+error.message}
+ }
+}
+async function saveMessageTemplate(kind){
+ if(!state.guild)return flash(kind+'TemplateStatus','ERROR · hãy chọn server',true);
+ const status=$(kind+'TemplateStatus'),button=$(kind==='welcome'?'saveWelcomeTemplate':'saveGoodbyeTemplate');
+ if(button){button.disabled=true;button.textContent='ĐANG LƯU...'}
+ try{
+  const data=await fetchJson('/api/guilds/'+state.guild.id+'/message-templates/'+kind,{method:'PUT',body:JSON.stringify({
+   title:templateValue(kind,'Title'),message:templateValue(kind,'Message'),image_url:templateValue(kind,'Image'),
+   button_label:templateValue(kind,'ButtonLabel'),button_url:templateValue(kind,'ButtonUrl')
+  })});
+  state.messageTemplates[kind]=data.template;
+  if(status)status.textContent='✅ SAVED · '+kind.toUpperCase()+' · '+new Date().toLocaleTimeString();
+  renderMessageTemplatePreview(kind);
+  await refreshActivity();
+ }catch(error){if(status)status.textContent='ERROR · '+error.message}
+ finally{if(button){button.disabled=false;button.textContent=kind==='welcome'?'LƯU WELCOME EMBED ↗':'LƯU GOODBYE EMBED ↗'}}
+}
 async function sendDashboardAnnouncement(){
  if(!state.guild||state.guild.botPresent===false)return flash('announcementStatus','🤖 Bot chưa có trong server này.',true);
  const channelId=$('announcementChannel').value;
@@ -219,7 +270,11 @@ function setupControls(){
  for(const id of ['announcementTitle','announcementMessage','announcementImageUrl','announcementButtonLabel','announcementButtonUrl']){
   $(id)?.addEventListener('input',renderAnnouncementPreview);
  }
- renderAnnouncementPreview();$('saveAuditLog')?.addEventListener('click',saveAuditLogChannel);$('saveAutoRole')?.addEventListener('click',saveAutoRole);$('postRolePanel')?.addEventListener('click',postRolePanel);$('postTicketPanel')?.addEventListener('click',postTicketPanel);$('previewBuilder')?.addEventListener('click',renderBuilderPreview);$('builderPreset')?.addEventListener('change',renderBuilderPreview);$('runBuilder')?.addEventListener('click',runServerBuilder);renderBuilderPreview();const spark=$('sparkleControl');spark?.addEventListener('click',()=>showRoute('dashboard'));$('saveVoice')?.addEventListener('click',async()=>{try{const enabled=$('autoVoice').checked,channelId=$('voiceChannel').value;await fetchJson(`/api/guilds/${state.guild.id}/config`,{method:'PUT',body:JSON.stringify({auto_voice_enabled:enabled,auto_voice_channel_id:channelId})});flash('responseBox',enabled?'AUTO VOICE ENABLED + JOINED':'AUTO VOICE DISABLED');$('matrixVoice').textContent=enabled?'active':'standby'}catch(e){flash('responseBox',`ERROR · ${e.message}`,true)}});$('leaveVoice')?.addEventListener('click',async()=>{try{await fetchJson(`/api/guilds/${state.guild.id}/voice/leave`,{method:'POST'});flash('responseBox','VOICE · LEFT');$('matrixVoice').textContent='standby'}catch(e){flash('responseBox',`ERROR · ${e.message}`,true)}});$('saveAfk')?.addEventListener('click',async()=>{try{await fetchJson(`/api/guilds/${state.guild.id}/afk`,{method:'PUT',body:JSON.stringify({reason:$('afkReason').value.trim(),media_url:$('afkMedia').value.trim()})});$('afkStatus').textContent='ACTIVE';flash('afkStatus','ACTIVE · profile saved');updateAfkPreview()}catch(e){flash('afkStatus',`ERROR · ${e.message}`,true)}});$('clearAfk')?.addEventListener('click',async()=>{try{await fetchJson(`/api/guilds/${state.guild.id}/afk`,{method:'DELETE'});$('afkReason').value='';$('afkMedia').value='';updateAfkPreview();$('afkStatus').textContent='IDLE'}catch(e){flash('afkStatus',`ERROR · ${e.message}`,true)}});$('afkMedia')?.addEventListener('input',updateAfkPreview);$('afkReason')?.addEventListener('input',updateAfkPreview);$('sendCommand')?.addEventListener('click',executeCommand);$('commandName')?.addEventListener('input',renderDynamicCommandForm);$('refreshActivity')?.addEventListener('click',refreshActivity);document.querySelectorAll('[data-quick]').forEach(b=>b.addEventListener('click',()=>{$('commandName').value=b.dataset.quick;$('commandArgs').value='';renderDynamicCommandForm();executeCommand()}))}
+ renderAnnouncementPreview();
+ for(const kind of ['welcome','goodbye']) for(const key of ['Title','Message','Image','ButtonLabel','ButtonUrl']) $(kind+'Template'+key)?.addEventListener('input',()=>renderMessageTemplatePreview(kind));
+ $('saveWelcomeTemplate')?.addEventListener('click',()=>saveMessageTemplate('welcome'));
+ $('saveGoodbyeTemplate')?.addEventListener('click',()=>saveMessageTemplate('goodbye'));
+ $('saveAuditLog')?.addEventListener('click',saveAuditLogChannel);$('saveAutoRole')?.addEventListener('click',saveAutoRole);$('postRolePanel')?.addEventListener('click',postRolePanel);$('postTicketPanel')?.addEventListener('click',postTicketPanel);$('previewBuilder')?.addEventListener('click',renderBuilderPreview);$('builderPreset')?.addEventListener('change',renderBuilderPreview);$('runBuilder')?.addEventListener('click',runServerBuilder);renderBuilderPreview();const spark=$('sparkleControl');spark?.addEventListener('click',()=>showRoute('dashboard'));$('saveVoice')?.addEventListener('click',async()=>{try{const enabled=$('autoVoice').checked,channelId=$('voiceChannel').value;await fetchJson(`/api/guilds/${state.guild.id}/config`,{method:'PUT',body:JSON.stringify({auto_voice_enabled:enabled,auto_voice_channel_id:channelId})});flash('responseBox',enabled?'AUTO VOICE ENABLED + JOINED':'AUTO VOICE DISABLED');$('matrixVoice').textContent=enabled?'active':'standby'}catch(e){flash('responseBox',`ERROR · ${e.message}`,true)}});$('leaveVoice')?.addEventListener('click',async()=>{try{await fetchJson(`/api/guilds/${state.guild.id}/voice/leave`,{method:'POST'});flash('responseBox','VOICE · LEFT');$('matrixVoice').textContent='standby'}catch(e){flash('responseBox',`ERROR · ${e.message}`,true)}});$('saveAfk')?.addEventListener('click',async()=>{try{await fetchJson(`/api/guilds/${state.guild.id}/afk`,{method:'PUT',body:JSON.stringify({reason:$('afkReason').value.trim(),media_url:$('afkMedia').value.trim()})});$('afkStatus').textContent='ACTIVE';flash('afkStatus','ACTIVE · profile saved');updateAfkPreview()}catch(e){flash('afkStatus',`ERROR · ${e.message}`,true)}});$('clearAfk')?.addEventListener('click',async()=>{try{await fetchJson(`/api/guilds/${state.guild.id}/afk`,{method:'DELETE'});$('afkReason').value='';$('afkMedia').value='';updateAfkPreview();$('afkStatus').textContent='IDLE'}catch(e){flash('afkStatus',`ERROR · ${e.message}`,true)}});$('afkMedia')?.addEventListener('input',updateAfkPreview);$('afkReason')?.addEventListener('input',updateAfkPreview);$('sendCommand')?.addEventListener('click',executeCommand);$('commandName')?.addEventListener('input',renderDynamicCommandForm);$('refreshActivity')?.addEventListener('click',refreshActivity);document.querySelectorAll('[data-quick]').forEach(b=>b.addEventListener('click',()=>{$('commandName').value=b.dataset.quick;$('commandArgs').value='';renderDynamicCommandForm();executeCommand()}))}
 
 function setupDevProfile(){
   const card=$('devCard');

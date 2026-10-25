@@ -141,6 +141,7 @@ import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMa
 import { normalizePage, slicePage } from '../lib/page-utils.js';
 import { keepsCommandResultPrivate, summarizeCommandResult } from '../lib/command-routing-utils.js';
 import { checkCommandCooldown, normalizeAutocompleteChoices } from '../lib/ux-utils.js';
+import { normalizeMessageTemplate, renderMessageTemplate } from '../lib/message-template-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, isRaidJoinBurst } from '../lib/automod-utils.js';
 test('parses human reminder durations and keeps numeric-second compatibility', () => {
   assert.equal(parseDuration('30m'), 1800);
@@ -420,4 +421,17 @@ test('native poll path explicitly consumes the shared command cooldown before im
   const pollBranch = source.slice(pollStart, source.indexOf("await interaction.deferReply", pollStart));
   assert.ok(pollBranch.includes('checkCommandCooldown(commandCooldowns'));
   assert.ok(pollBranch.includes('buildNativePollPayload(args)'));
+});
+
+test('welcome/goodbye templates validate HTTPS links and sanitize mentions', () => {
+  const template = normalizeMessageTemplate('welcome', {
+    title:'Welcome {user}',message:'Hello {user} to {server}! <@&123456789012345678>',
+    image_url:'https://example.com/banner.png',button_label:'Rules',button_url:'https://example.com/rules'
+  });
+  assert.equal(template.kind,'welcome');
+  assert.equal(template.message.includes('<@&123456789012345678>'),false);
+  assert.equal(renderMessageTemplate(template,'Player','My Server').title,'Welcome Player');
+  assert.equal(renderMessageTemplate(template,'Player','My Server').message.includes('My Server'),true);
+  assert.throws(()=>normalizeMessageTemplate('goodbye',{title:'x',message:'{user}',image_url:'javascript:alert(1)'}),/HTTPS/);
+  assert.throws(()=>normalizeMessageTemplate('welcome',{title:'Title',message:'Message',button_label:'Rules'}),/cả nhãn và URL/);
 });

@@ -27,6 +27,7 @@ import { normalizeTempVoiceRoomName, normalizeVoiceUserLimit } from './lib/temp-
 import { normalizeTagName, normalizeFaqKeyword, sanitizeCommunityContent, findMatchingFaq } from './lib/tag-utils.js';
 import { normalizePage, slicePage } from './lib/page-utils.js';
 import { keepsCommandResultPrivate, summarizeCommandResult } from './lib/command-routing-utils.js';
+import { normalizeMessageTemplate, renderMessageTemplate } from './lib/message-template-utils.js';
 import { checkCommandCooldown, normalizeAutocompleteChoices } from './lib/ux-utils.js';
 import { normalizeBlockedDomains, findBlockedDomain, isMassMention, recentTimestamps, isRaidJoinBurst } from './lib/automod-utils.js';
 import { isOpenAkiTicket, parseAkiTicketTopic, ticketDeletionDelay, TICKET_RETENTION_MS, normalizeTicketType, ticketTypeLabel } from './lib/ticket-utils.js';
@@ -135,6 +136,7 @@ const memory = {
 };
 const faqRuleCache = new Map();
 const faqResponseCooldowns = new Map();
+const memoryMessageTemplates = new Map();
 let nextGiveawayId = 1;
 let giveawayWorkerRunning = false;
 let nextSuggestionId = 1;
@@ -2564,6 +2566,41 @@ async function refreshFaqRuleCache(guildId) {
   faqRuleCache.set(guildId,rules);
   return rules;
 }
+
+async function getGuildMessageTemplate(guildId, kind) {
+  if (!['welcome','goodbye'].includes(kind)) return null;
+  if (pool) {
+    const result = await dbQuery('SELECT guild_id,kind,title,message,image_url,button_label,button_url,updated_by,updated_at FROM guild_message_templates WHERE guild_id=$1 AND kind=$2', [guildId,kind]);
+    return result.rows[0] || null;
+  }
+  return memoryMessageTemplates.get(guildId + ':' + kind) || null;
+}
+async function saveGuildMessageTemplate(guildId, kind, template, updatedBy) {
+  const normalized = normalizeMessageTemplate(kind,template);
+  if (pool) {
+    const result = await dbQuery(
+      'INSERT INTO guild_message_templates(guild_id,kind,title,message,image_url,button_label,button_url,updated_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(guild_id,kind) DO UPDATE SET title=EXCLUDED.title,message=EXCLUDED.message,image_url=EXCLUDED.image_url,button_label=EXCLUDED.button_label,button_url=EXCLUDED.button_url,updated_by=EXCLUDED.updated_by,updated_at=NOW() RETURNING guild_id,kind,title,message,image_url,button_label,button_url,updated_by,updated_at',
+      [guildId,normalized.kind,normalized.title,normalized.message,normalized.image_url,normalized.button_label,normalized.button_url,updatedBy]
+    );
+    return result.rows[0];
+  }
+  const row = { guild_id:guildId, ...normalized, updated_by:updatedBy, updated_at:new Date().toISOString() };
+  memoryMessageTemplates.set(guildId + ':' + kind,row);
+  return row;
+}
+function buildMessageTemplateEmbed(kind, template, member, guild, fallbackTitle, fallbackMessage) {
+  const raw = template || { title:fallbackTitle, message:fallbackMessage };
+  const rendered = renderMessageTemplate(raw, member.user?.globalName || member.user?.username || member.displayName, guild.name);
+  const embed = new EmbedBuilder().setColor(kind === 'welcome' ? 0x57F287 : 0x5865F2)
+    .setTitle(rendered.title).setDescription(rendered.message).setTimestamp();
+  const avatar = member.user?.displayAvatarURL?.({ size: 256 });
+  if (template?.image_url) embed.setImage(template.image_url);
+  else if (avatar) embed.setThumbnail(avatar);
+  const components = template?.button_url && template?.button_label
+    ? [new ActionRowBuilder().addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel(String(template.button_label).slice(0,80)).setURL(template.button_url))]
+    : [];
+  return { embeds:[embed],components,allowedMentions:{parse:[]} };
+}
 async function saveFaqRule(guildId, keyword, response, createdBy) {
   if (pool) {
     const result = await dbQuery(
@@ -3847,8 +3884,17 @@ bot.on('guildMemberAdd', async member => {
       if (!channel?.isTextBased?.()) throw new Error('Kênh welcome đã bị xoá hoặc không phải kênh text.');
       const welcomeNextStep = cfg?.verification_enabled && cfg.verification_channel_id
         ? 'Hãy đến <#' + cfg.verification_channel_id + '> và nhấn nút xác minh để nhận role Member.'
-        : 'Hãy đọc nội quy và chọn role phù hợp nhé.';
-      await channel.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setTitle('👋 Chào mừng thành viên mới!').setDescription('Chào mừng ' + member.toString() + ' đến với **' + member.guild.name + '**!\n' + welcomeNextStep).setThumbnail(member.user.displayAvatarURL({ size: 256 })).setTimestamp()], allowedMentions: { users: [member.id] } });
+        : '';
+      const template = await getGuildMessageTemplate(member.guild.id,'welcome');
+      const payload = template
+        ? buildMessageTemplateEmbed('welcome',template,member,member.guild)
+        : buildMessageTemplateEmbed('welcome',null,member,member.guild,'👋 Chào mừng thành viên mới!','Chào mừng {user} đến với **{server}**!\nHãy đọc nội quy và chọn role phù hợp nhé.');
+      if (welcomeNextStep) {
+        const embed = payload.embeds[0];
+        const currentDescription = embed.data.description || '';
+        embed.setDescription((currentDescription + '\n\n' + welcomeNextStep).slice(0,4000));
+      }
+      await channel.send(payload);
     }
   } catch (error) { void reportRuntimeError(error, 'welcome-message', member.guild.id); }
   try {
@@ -3886,7 +3932,13 @@ bot.on('guildMemberRemove', async member => {
     const cfg = await getConfig(member.guild.id);
     if (cfg.goodbye_channel_id) {
       const channel = await member.guild.channels.fetch(cfg.goodbye_channel_id).catch(() => null);
-      if (channel?.isTextBased?.()) await channel.send({ embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('👋 Một thành viên đã rời đi').setDescription('**' + (member.user.globalName || member.user.username) + '** đã rời khỏi server.').setThumbnail(member.user.displayAvatarURL({ size: 128 })).setTimestamp()], allowedMentions: { parse: [] } });
+      if (channel?.isTextBased?.()) {
+        const template = await getGuildMessageTemplate(member.guild.id,'goodbye');
+        const payload = template
+          ? buildMessageTemplateEmbed('goodbye',template,member,member.guild)
+          : buildMessageTemplateEmbed('goodbye',null,member,member.guild,'👋 Một thành viên đã rời đi','**{user}** đã rời khỏi **{server}**.');
+        await channel.send(payload);
+      }
     }
   } catch (error) { void reportRuntimeError(error, 'goodbye-message', member.guild.id); }
   addActivity(member.guild.id, member.id, 'member:leave', `👋 ${member.user.globalName || member.user.username} đã rời server.`).catch(() => {});
@@ -3916,6 +3968,35 @@ bot.on('voiceStateUpdate', async (oldState, newState) => {
   }
 });
 
+app.get('/api/guilds/:guildId/message-templates/:kind', requireAuth, async (req,res) => {
+  try {
+    const { guild } = await requireGuildControl(req,res);
+    const kind = String(req.params.kind || '');
+    if (!['welcome','goodbye'].includes(kind)) return res.status(400).json({error:'TEMPLATE_KIND_INVALID'});
+    const actorId = discordActorId(req.session);
+    const actor = actorId ? await fetchGuildMember(guild,actorId) : null;
+    if (!actor || (actor.id !== guild.ownerId && !actor.permissions.has(PermissionFlagsBits.ManageGuild))) return res.status(403).json({error:'MANAGE_GUILD_REQUIRED'});
+    const saved = await getGuildMessageTemplate(guild.id,kind);
+    const defaults = kind === 'welcome'
+      ? {kind,title:'👋 Chào mừng thành viên mới!',message:'Chào mừng {user} đến với **{server}**!\nHãy đọc nội quy và chọn role phù hợp nhé.',image_url:null,button_label:null,button_url:null}
+      : {kind,title:'👋 Một thành viên đã rời đi',message:'**{user}** đã rời khỏi **{server}**.',image_url:null,button_label:null,button_url:null};
+    return res.json({template:saved || defaults, saved:Boolean(saved)});
+  } catch(error) { return res.status(error.status || 500).json({error:error.message || 'TEMPLATE_LOAD_FAILED'}); }
+});
+app.put('/api/guilds/:guildId/message-templates/:kind', requireAuth, async (req,res) => {
+  try {
+    const { guild } = await requireGuildControl(req,res);
+    const kind = String(req.params.kind || '');
+    if (!['welcome','goodbye'].includes(kind)) return res.status(400).json({error:'TEMPLATE_KIND_INVALID'});
+    const actorId = discordActorId(req.session);
+    const actor = actorId ? await fetchGuildMember(guild,actorId) : null;
+    if (!actor || (actor.id !== guild.ownerId && !actor.permissions.has(PermissionFlagsBits.ManageGuild))) return res.status(403).json({error:'MANAGE_GUILD_REQUIRED'});
+    const template = normalizeMessageTemplate(kind,req.body || {});
+    const saved = await saveGuildMessageTemplate(guild.id,kind,template,actorId);
+    await addActivity(guild.id,actorId,'template:'+kind+':updated','Đã lưu template '+kind+' có preview/biến động cho server.');
+    return res.json({ok:true,template:saved});
+  } catch(error) { return res.status(error.status || 400).json({error:error.message || 'TEMPLATE_SAVE_FAILED'}); }
+});
 app.get('/api/commands', (_req, res) => {
   res.set('Cache-Control', 'public, max-age=300');
   res.json({ commands: commands.filter(command => (!command.type || command.type === ApplicationCommandType.ChatInput) && command.name !== 'sell').map(command => ({

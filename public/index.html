@@ -202,6 +202,30 @@
             </div>
             <pre id="announcementStatus" class="response-box">READY · chọn kênh và nhập nội dung</pre>
           </article>
+          <article class="panel control-card message-template-editor-card">
+            <div class="panel-title"><div><span>EMBED STUDIO</span><h3>👋 Welcome & Goodbye</h3></div><span class="status-chip">LIVE PREVIEW</span></div>
+            <p class="tiny-note">Tuỳ chỉnh lời chào khi thành viên vào/rời server. Hỗ trợ biến {user}, {server}, ảnh HTTPS và nút liên kết HTTPS. Kênh gửi vẫn cấu hình bằng /welcome-setup và /goodbye-setup.</p>
+            <div class="message-template-grid">
+              <section class="message-template-section">
+                <h4>WELCOME · THÀNH VIÊN MỚI</h4>
+                <div class="field"><label for="welcomeTemplateTitle">TIÊU ĐỀ</label><input id="welcomeTemplateTitle" maxlength="256" placeholder="👋 Chào mừng thành viên mới!"></div>
+                <div class="field"><label for="welcomeTemplateMessage">NỘI DUNG</label><textarea id="welcomeTemplateMessage" rows="3" maxlength="4000" placeholder="Chào mừng {user} đến với {server}!"></textarea></div>
+                <div class="field"><label for="welcomeTemplateImage">URL ẢNH EMBED · HTTPS</label><input id="welcomeTemplateImage" type="url" maxlength="2048" placeholder="https://example.com/welcome.png"></div>
+                <div class="command-dynamic-fields"><div class="field"><label for="welcomeTemplateButtonLabel">NHÃN NÚT</label><input id="welcomeTemplateButtonLabel" maxlength="80" placeholder="Đọc nội quy"></div><div class="field"><label for="welcomeTemplateButtonUrl">URL NÚT · HTTPS</label><input id="welcomeTemplateButtonUrl" type="url" maxlength="2048" placeholder="https://example.com/rules"></div></div>
+                <div class="announcement-live-preview"><div class="announcement-preview-caption">WELCOME PREVIEW</div><div class="announcement-preview-card"><div id="welcomeTemplatePreviewTitle" class="announcement-preview-title">👋 Chào mừng thành viên mới!</div><div id="welcomeTemplatePreviewMessage" class="announcement-preview-message">Chào mừng {user} đến với {server}!</div><img id="welcomeTemplatePreviewImage" class="announcement-preview-image" alt="Welcome preview" hidden><a id="welcomeTemplatePreviewButton" class="announcement-preview-button" href="#" target="_blank" rel="noopener noreferrer" hidden>Đọc nội quy ↗</a></div></div>
+                <button class="btn btn-light" id="saveWelcomeTemplate" type="button">LƯU WELCOME EMBED ↗</button><pre id="welcomeTemplateStatus" class="response-box">READY · chưa lưu</pre>
+              </section>
+              <section class="message-template-section">
+                <h4>GOODBYE · THÀNH VIÊN RỜI ĐI</h4>
+                <div class="field"><label for="goodbyeTemplateTitle">TIÊU ĐỀ</label><input id="goodbyeTemplateTitle" maxlength="256" placeholder="👋 Một thành viên đã rời đi"></div>
+                <div class="field"><label for="goodbyeTemplateMessage">NỘI DUNG</label><textarea id="goodbyeTemplateMessage" rows="3" maxlength="4000" placeholder="{user} đã rời khỏi {server}."></textarea></div>
+                <div class="field"><label for="goodbyeTemplateImage">URL ẢNH EMBED · HTTPS</label><input id="goodbyeTemplateImage" type="url" maxlength="2048" placeholder="https://example.com/goodbye.png"></div>
+                <div class="command-dynamic-fields"><div class="field"><label for="goodbyeTemplateButtonLabel">NHÃN NÚT</label><input id="goodbyeTemplateButtonLabel" maxlength="80" placeholder="Quay lại server"></div><div class="field"><label for="goodbyeTemplateButtonUrl">URL NÚT · HTTPS</label><input id="goodbyeTemplateButtonUrl" type="url" maxlength="2048" placeholder="https://example.com"></div></div>
+                <div class="announcement-live-preview"><div class="announcement-preview-caption">GOODBYE PREVIEW</div><div class="announcement-preview-card"><div id="goodbyeTemplatePreviewTitle" class="announcement-preview-title">👋 Một thành viên đã rời đi</div><div id="goodbyeTemplatePreviewMessage" class="announcement-preview-message">{user} đã rời khỏi {server}.</div><img id="goodbyeTemplatePreviewImage" class="announcement-preview-image" alt="Goodbye preview" hidden><a id="goodbyeTemplatePreviewButton" class="announcement-preview-button" href="#" target="_blank" rel="noopener noreferrer" hidden>Quay lại server ↗</a></div></div>
+                <button class="btn btn-light" id="saveGoodbyeTemplate" type="button">LƯU GOODBYE EMBED ↗</button><pre id="goodbyeTemplateStatus" class="response-box">READY · chưa lưu</pre>
+              </section>
+            </div>
+          </article>
           <article class="panel control-card automation-card">
             <div class="panel-title"><div><span>AUTOMATION HUB</span><h3>⚙️ Auto-role & panels</h3></div><span class="status-chip">WEB ↔ DISCORD</span></div>
             <p class="tiny-note">Tự gán role Member khi thành viên mới vào, đăng bảng reaction-role để nhận/gỡ role ping bằng emoji và tạo ticket riêng tư.</p>

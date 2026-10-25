@@ -119,3 +119,8 @@ Manage Server staff can use /tag-set and /tag-delete for reusable server snippet
 ### Shared command cooldown and presence
 
 All slash, prefix and dashboard commands share a per-user/per-server/per-command cooldown. Configure `COMMAND_COOLDOWN_MS` (default 1200; set 0 to disable), plus `BOT_PRESENCE_TEXT`, `BOT_PRESENCE_TYPE` (`Playing`, `Watching`, `Listening`, or `Competing`) and `BOT_PRESENCE_STATUS` (`online`, `idle`, `dnd`, or `invisible`). The `/tag`, `/tag-delete`, `/faq-delete` and `/giveaway-reroll` options use server-scoped autocomplete; moderation-only choices are not returned to ordinary members.
+
+
+### Welcome/Goodbye embed studio
+
+The dashboard has a live preview editor for join/leave embeds, including {user} / {server} placeholders, HTTPS images, and optional HTTPS link buttons. Templates are persisted separately by guild_id + kind in migration 013, so existing guild configuration and welcome/goodbye channel IDs remain compatible. Only a Discord member with Manage Server (or the server owner) can load/save templates.
